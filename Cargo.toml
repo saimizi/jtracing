@@ -1,0 +1,28 @@
+[package]
+name = "perf-tools"
+version = "0.1.0"
+authors = ["Seimizu Joukan <joukan.seimizu@gmail.com>"]
+edition = "2021"
+license = "GPL-2.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "tracelib"
+
+[[bin]]
+name="opensnoop"
+path="src/opensnoop.rs"
+
+
+[dependencies]
+log = "0.4"
+jlogger = "0.1"
+anyhow = "1.0"
+clap = { version="3.1", features = ["derive"] }
+regex = "1"
+rand = "0.8"
+tokio = {version = "1", features = ["full"]}
+libc = "0.2"
+
+[profile.release]
+strip = true
