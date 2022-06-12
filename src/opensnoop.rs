@@ -43,7 +43,7 @@ async fn async_main() -> Result<()> {
 
             let mut tlog = TraceLog::new().await?;
 
-            println!("{:<12} {:15} {:<8} {}", "TimeStamp", "Task", "PID", "OpenedFile");
+            println!("{:<12} {:15} {:<8} {:<30}", "TimeStamp", "Task", "PID", "OpenedFile");
             println!("{}", "=".repeat(80));
             loop {
                 tokio::select! {

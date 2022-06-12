@@ -39,7 +39,7 @@ pub fn writeln_proc(f: &str, s: &str, append: bool) -> Result<()> {
         let cbuf = CString::new(s)?;
         let ret = libc::fwrite(
             cbuf.as_ptr() as *const libc::c_void,
-            libc::strlen(cbuf.as_ptr()),
+            cbuf.as_bytes().len(),
             1,
             fp,
         ) as i32;
@@ -76,7 +76,7 @@ pub async fn writeln_str_file(f: &str, s: &str, append: bool) -> Result<()> {
 
     let mut writer = BufWriter::new(file);
 
-    let len = writer
+    writer
         .write(ns.as_bytes())
         .await
         .with_context(|| format!("Failed write {} to {}", ns, f))?;
