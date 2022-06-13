@@ -1,6 +1,6 @@
 [package]
 name = "jtracing"
-version = "0.1.2"
+version = "0.1.3"
 description = "Tracing utilites."
 authors = ["Seimizu Joukan <joukan.seimizu@gmail.com>"]
 repository = "https://github.com/saimizi/jtracing.git"
