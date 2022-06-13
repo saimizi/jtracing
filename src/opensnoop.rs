@@ -1,6 +1,7 @@
 #[allow(unused)]
 use {
     anyhow::{Context, Error, Result},
+    clap::Parser,
     jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
     log::{debug, error, info, warn, LevelFilter},
     std::{
@@ -13,18 +14,65 @@ use {
         io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, BufReader},
         signal,
         sync::mpsc::{self, Receiver, Sender},
+        sync::oneshot,
         task::JoinHandle,
+        time::{timeout, Duration, Instant},
     },
     tracelib::{trace_top_dir, writeln_str_file, Kprobe, TraceLog},
 };
 
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
+struct Cli {
+    /// Trace duration in seconds
+    #[clap(short = 'd', long = "duration")]
+    duration: Option<u64>,
+
+    /// Trace PID
+    #[clap(short = 'p', long = "pid")]
+    pid: Option<u32>,
+
+    /// Trace COMMAND 
+    #[clap(short = 'c', long = "command")]
+    command: Option<String>,
+}
+
+async fn wait_to_finish(start: Instant, duration_s: Option<u64>) -> Result<()> {
+    let wait_ctrc = signal::ctrl_c();
+
+    if let Some(s) = duration_s {
+        let to = Duration::from_secs(s) - start.elapsed();
+        if !to.is_zero() {
+            timeout(to, wait_ctrc).await??;
+        }
+    } else {
+        signal::ctrl_c().await?;
+    }
+
+    Ok(())
+}
+
 async fn async_main() -> Result<()> {
     JloggerBuilder::new()
         .max_level(log::LevelFilter::Debug)
-        .log_runtime(true)
-        .log_time(true)
-        .log_time_format(jlogger::LogTimeFormat::TimeStamp)
+        .log_runtime(false)
+        .log_time(false)
         .build();
+
+    let cli = Cli::parse();
+
+    let mut duration = None;
+    if let Some(d) = cli.duration {
+        duration = Some(d);
+    }
+
+    if let Some(p) = cli.pid {
+        info!("Traing PID {}..", p);
+    }
+
+    if let Some(ref c) = cli.command {
+        info!("Traing command {}..", c);
+    }
 
     let current_tracer = format!("{}/current_tracer", trace_top_dir().await?);
 
@@ -43,8 +91,14 @@ async fn async_main() -> Result<()> {
 
             let mut tlog = TraceLog::new().await?;
 
-            println!("{:<12} {:15} {:<8} {:<30}", "TimeStamp", "Task", "PID", "OpenedFile");
+            println!();
+            println!(
+                "{:<12} {:15} {:<8} {:<30}",
+                "TimeStamp", "Task", "PID", "OpenedFile"
+            );
             println!("{}", "=".repeat(80));
+
+            let start = tokio::time::Instant::now();
             loop {
                 tokio::select! {
                     //Ok(log) = tlog.trace_print() => print!("{}", log),
@@ -62,12 +116,27 @@ async fn async_main() -> Result<()> {
                                 flag.push_str(itor.next().unwrap());
                                 mode.push_str(itor.next().unwrap());
 
-                                println!("{:<12} {:15} {:<8} {:<30}",ts, task, pid, fname);
+                                loop {
+                                    if let Some(tpid) = cli.pid {
+                                        if tpid != pid {
+                                            break;
+                                        }
+                                    }
+
+                                    if let Some(ref c) = cli.command {
+                                        if c != &task {
+                                            break;
+                                        }
+                                    }
+                                    println!("{:<12} {:15} {:<8} {:<30}",ts, task, pid, fname);
+                                    break;
+                                }
+
                             },
                             Err(e) => eprintln!("Error: {}", e),
                          }
                     },
-                    Ok(()) = signal::ctrl_c() => {
+                    _result = wait_to_finish(start, duration) => {
                         let _ = kp.disable();
                         kp.exit().await;
                         break;
