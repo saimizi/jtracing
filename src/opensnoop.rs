@@ -67,11 +67,11 @@ async fn async_main() -> Result<()> {
     }
 
     if let Some(p) = cli.pid {
-        info!("Traing PID {}..", p);
+        info!("Traing PID {} ...", p);
     }
 
     if let Some(ref c) = cli.command {
-        info!("Traing command {}..", c);
+        info!("Traing command {} ...", c);
     }
 
     let current_tracer = format!("{}/current_tracer", trace_top_dir().await?);
@@ -138,10 +138,17 @@ async fn async_main() -> Result<()> {
                                     }
 
                                     if let Some(ref c) = cli.command {
-                                        if c != &task {
-                                            break;
+                                        if task.len() >= 15 {
+                                            if !c.starts_with(&task) {
+                                                break;
+                                            }
+                                        } else {
+                                            if c != &task {
+                                                break;
+                                            }
                                         }
                                     }
+                                    jdebug!("task:{}", task);
 
                                     println!("{:<12} {:15} {:<8} {:<30}",ts, task, pid, fname);
                                     break;
