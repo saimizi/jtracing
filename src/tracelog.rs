@@ -96,12 +96,14 @@ impl TraceLog {
 
         {
             let task_pid_str = &to_process[..spliter];
+            jdebug!("task_pid_str: {}", task_pid_str);
             let tspliter = task_pid_str.rfind('-').ok_or(errlog())?;
             task = String::from(task_pid_str[..tspliter].trim());
             pid = task_pid_str[tspliter+1..].trim().parse()?; 
         }
 
         to_process =&to_process[spliter + 1..];
+        jdebug!("log str: {}", to_process);
         spliter = to_process.find("] ").ok_or(errlog())?;
         cpu = to_process[..spliter].parse()?;
 

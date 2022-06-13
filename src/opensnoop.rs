@@ -35,6 +35,9 @@ struct Cli {
     /// Trace COMMAND
     #[clap(short = 'c', long = "command")]
     command: Option<String>,
+
+    #[clap(short, long, parse(from_occurrences))]
+    verbose: usize,
 }
 
 async fn wait_to_finish(start: Instant, duration_s: Option<u64>) -> Result<()> {
@@ -53,13 +56,19 @@ async fn wait_to_finish(start: Instant, duration_s: Option<u64>) -> Result<()> {
 }
 
 async fn async_main() -> Result<()> {
+    let cli = Cli::parse();
+
+    let max_level = match cli.verbose {
+        0 => LevelFilter::Info,
+        1 => LevelFilter::Debug,
+        _ => LevelFilter::Trace,
+    };
+
     JloggerBuilder::new()
-        .max_level(log::LevelFilter::Debug)
+        .max_level(max_level)
         .log_runtime(false)
         .log_time(false)
         .build();
-
-    let cli = Cli::parse();
 
     let mut duration = None;
     if let Some(d) = cli.duration {
@@ -148,7 +157,6 @@ async fn async_main() -> Result<()> {
                                             }
                                         }
                                     }
-                                    jdebug!("task:{}", task);
 
                                     println!("{:<12} {:15} {:<8} {:<30}",ts, task, pid, fname);
                                     break;
