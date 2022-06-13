@@ -77,12 +77,12 @@ impl TraceLog {
     }
 
     pub async fn trace_fields(&mut self) -> Result<(String, u32, u8, String, f32, String)> {
-        let mut task = String::new();
-        let mut pid = u32::MAX;
-        let mut cpu = u8::MAX;
-        let mut flag = String::new();
+        let task;
+        let pid;
+        let cpu;
+        let flag;
         let mut msg = String::new();
-        let mut ts = 0_f32;
+        let ts;
 
         let log = self
             .receiver
@@ -90,50 +90,31 @@ impl TraceLog {
             .await
             .ok_or_else(|| Error::msg("Trace terminated"))?;
 
-        let entries = log.split(' ').collect::<Vec<&str>>().into_iter();
+        let mut to_process = log.as_str();
+        let errlog = || Error::msg(format!("Invalid log string : {}", &log));
+        let mut spliter = to_process.find('[').ok_or(errlog())?;
 
-        for (_i, t) in entries.enumerate() {
-            if t.trim().is_empty() {
-                continue;
-            }
-
-            if task.is_empty() {
-                let p = t.rfind('-').unwrap();
-                task = t[0..p].to_string();
-                pid = t[p + 1..]
-                    .parse()
-                    .map_err(|e| Error::msg(format!("{}", e)))?;
-                continue;
-            }
-
-            if cpu == u8::MAX {
-                cpu = t
-                    .trim_start_matches('[')
-                    .trim_end_matches(']')
-                    .parse()
-                    .map_err(|e| Error::msg(format!("{}", e)))?;
-                continue;
-            }
-
-            if flag.is_empty() {
-                flag = t.to_string();
-                continue;
-            }
-
-            if ts == 0_f32 {
-                ts = t
-                    .trim_end_matches(':')
-                    .parse()
-                    .map_err(|e| Error::msg(format!("{}", e)))?;
-                continue;
-            }
-
-            if !msg.is_empty() {
-                msg.push(' ');
-            }
-            msg.push_str(t);
-            
+        {
+            let task_pid_str = &to_process[..spliter];
+            let tspliter = task_pid_str.rfind('-').ok_or(errlog())?;
+            task = String::from(task_pid_str[..tspliter].trim());
+            pid = task_pid_str[tspliter+1..].trim().parse()?; 
         }
+
+        to_process =&to_process[spliter + 1..];
+        spliter = to_process.find("] ").ok_or(errlog())?;
+        cpu = to_process[..spliter].parse()?;
+
+        to_process =&to_process[spliter + 2..];
+        spliter = to_process.find(' ').ok_or(errlog())?;
+        flag = String::from(to_process[..spliter].trim());
+
+        to_process =&to_process[spliter + 1..];
+        spliter = to_process.find(':').ok_or(errlog())?;
+        ts = to_process[..spliter].trim().parse()?;
+
+        to_process =&to_process[spliter + 1..];
+        msg.push_str(to_process.trim());
 
         Ok((
             task,
