@@ -32,7 +32,7 @@ struct Cli {
     #[clap(short = 'p', long = "pid")]
     pid: Option<u32>,
 
-    /// Trace COMMAND 
+    /// Trace COMMAND
     #[clap(short = 'c', long = "command")]
     command: Option<String>,
 }
@@ -105,18 +105,32 @@ async fn async_main() -> Result<()> {
                      result = tlog.trace_fields() => {
                          match result {
                             Ok((task, pid, _cpu, _flag, ts, msg)) => {
-                                let mut fname = String::new();
-                                let mut flag = String::new();
-                                let mut mode = String::new();
-                                let mut itor = msg.split(' ').collect::<Vec<&str>>().into_iter();
-                                itor.next();
-                                itor.next();
-
-                                fname.push_str(itor.next().unwrap());
-                                flag.push_str(itor.next().unwrap());
-                                mode.push_str(itor.next().unwrap());
-
                                 loop {
+                                    let mut fname = String::new();
+                                    let mut flag = String::new();
+                                    let mut mode = String::new();
+                                    let mut itor = msg.split(' ').collect::<Vec<&str>>().into_iter();
+                                    itor.next();
+                                    itor.next();
+
+                                    if let Some(s) = itor.next() {
+                                        fname.push_str(s);
+                                    } else {
+                                        break;
+                                    }
+
+                                    if let Some(s) = itor.next() {
+                                        flag.push_str(s);
+                                    } else {
+                                        break;
+                                    }
+
+                                    if let Some(s) = itor.next() {
+                                        mode.push_str(s);
+                                    } else {
+                                        break;
+                                    }
+
                                     if let Some(tpid) = cli.pid {
                                         if tpid != pid {
                                             break;
@@ -128,6 +142,7 @@ async fn async_main() -> Result<()> {
                                             break;
                                         }
                                     }
+
                                     println!("{:<12} {:15} {:<8} {:<30}",ts, task, pid, fname);
                                     break;
                                 }
