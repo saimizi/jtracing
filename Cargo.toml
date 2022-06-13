@@ -1,7 +1,9 @@
 [package]
-name = "perf-tools"
+name = "jtracing"
 version = "0.1.0"
+description = "Tracing utilites."
 authors = ["Seimizu Joukan <joukan.seimizu@gmail.com>"]
+repository = "https://github.com/saimizi/jtracing.git"
 edition = "2021"
 license = "GPL-2.0"
 
