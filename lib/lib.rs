@@ -111,3 +111,14 @@ pub async fn trace_top_dir() -> Result<String> {
 
     Err(Error::msg("trace_pipe not found"))
 }
+
+pub fn bump_memlock_rlimit() {
+    unsafe {
+        let limit = libc::rlimit {
+            rlim_cur: libc::RLIM_INFINITY,
+            rlim_max: libc::RLIM_INFINITY,
+        };
+
+        libc::setrlimit(libc::RLIMIT_MEMLOCK, &limit as *const libc::rlimit);
+    }
+}

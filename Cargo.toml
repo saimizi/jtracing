@@ -10,11 +10,15 @@ license = "GPL-2.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
 name = "tracelib"
+path = "lib/lib.rs"
 
 [[bin]]
-name="opensnoop"
-path="src/opensnoop.rs"
+name = "opensnoop"
+path = "opensnoop/opensnoop.rs"
 
+[[bin]]
+name = "execsnoop_pb"
+path = "execsnoop_pb/execsnoop_pb.rs"
 
 [dependencies]
 log = "0.4"
@@ -24,7 +28,18 @@ clap = { version="3.1", features = ["derive"] }
 regex = "1"
 rand = "0.8"
 tokio = {version = "1", features = ["full"]}
+libbpf-rs = "0.17"
+nix = "0.24"
+blazesym = { git = "https://github.com/ThinkerYzu1/blazesym.git", features = ["cheader"] }
 libc = "0.2"
+plain = "0.2"
+ctrlc = "3.2"
+chrono = "0.4"
 
 [profile.release]
 strip = true
+
+[build-dependencies]
+libbpf-cargo = "0.11"
+jlogger = "0.1"
+log = "0.4"

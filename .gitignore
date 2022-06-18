@@ -1,1 +1,4 @@
 /target
+*/bpf/.output
+*/bpf/vmlinux.h
+*/bpf/*.skel.rs
