@@ -30,7 +30,6 @@ rand = "0.8"
 tokio = {version = "1", features = ["full"]}
 libbpf-rs = "0.17"
 nix = "0.24"
-blazesym = { git = "https://github.com/ThinkerYzu1/blazesym.git", features = ["cheader"] }
 libc = "0.2"
 plain = "0.2"
 ctrlc = "3.2"
