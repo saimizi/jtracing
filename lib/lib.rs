@@ -4,6 +4,7 @@ use {
     jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
     log::{debug, error, info, warn, LevelFilter},
     std::{
+        ffi::{CStr, CString},
         fmt::Display,
         path::{Path, PathBuf},
     },
@@ -16,14 +17,16 @@ use {
 };
 
 pub mod kprobe;
+pub mod symbolanalyzer;
 pub mod tracelog;
 
 pub use kprobe::Kprobe;
+pub use symbolanalyzer::ElfFile;
+pub use symbolanalyzer::ExecMap;
+pub use symbolanalyzer::SymbolAnalyzer;
 pub use tracelog::TraceLog;
 
 pub fn writeln_proc(f: &str, s: &str, append: bool) -> Result<()> {
-    use std::ffi::CString;
-
     unsafe {
         let cfile = CString::new(f)?;
         let mut mode = CString::new("w")?;
@@ -121,4 +124,15 @@ pub fn bump_memlock_rlimit() {
 
         libc::setrlimit(libc::RLIMIT_MEMLOCK, &limit as *const libc::rlimit);
     }
+}
+
+/// # Safety
+///
+/// This function might dereference a raw pointer.
+pub unsafe fn bytes_to_string(b: *const i8) -> String {
+    let ret = String::from("INVALID");
+    if let Ok(s) = CStr::from_ptr(std::mem::transmute(b)).to_str() {
+        return s.to_owned();
+    }
+    ret
 }
