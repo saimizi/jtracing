@@ -14,7 +14,7 @@ use {
         },
         time::Instant,
     },
-    tracelib::bump_memlock_rlimit,
+    tracelib::{bump_memlock_rlimit, bytes_to_string},
 };
 
 #[path = "bpf/execsnoop_pb.skel.rs"]
@@ -81,38 +81,48 @@ fn main() -> Result<()> {
         let mut event = Event::default();
         plain::copy_from_bytes(&mut event, data).expect("Corrupted event data");
 
-        let trans = |a: *const i8| -> String {
-            let ret = String::from("INVALID");
-            unsafe {
-                if let Ok(s) = CStr::from_ptr(std::mem::transmute(a)).to_str() {
-                    return s.to_owned();
-                }
-            }
-            ret
-        };
-
         let now = chrono::Local::now();
         let timestamp_us = (now.timestamp_nanos() - start.timestamp_nanos()) / 1000;
+
+        let signals = "HUP INT QUIT ILL TRAP ABRT BUS FPE KILL USR1 SEGV USR2 PIPE ALRM TERM STKFLT CHLD CONT STOP TSTP TTIN TTOU URG XCPU XFSZ VTALRM PROF WINCH POLL PWR SYS"
+            .split(' ').collect::<Vec<&str>>();
+
         if event.exit_event != 0 {
+            let signal_info = {
+                if event.last_sig != -1 {
+                    format!(
+                        "[{}={} <- {}({})]",
+                        signals[event.last_sig as usize - 1],
+                        event.last_sig,
+                        unsafe { bytes_to_string(event.last_signal_comm.as_ptr()) },
+                        event.last_signal_pid
+                    )
+                } else {
+                    String::new()
+                }
+            };
+
             if show_timestamp {
                 print!(
-                    "{:^20.6}{:<7}{:<16}{:<8}{:<8}[{}]",
+                    "{:^20.6}{:<7}{:<16}{:<8}{:<8}[{}] {}",
                     timestamp_us as f64 / 1000000_f64,
                     "EXIT",
-                    trans(event.comm.as_ptr()),
+                    unsafe { bytes_to_string(event.comm.as_ptr()) },
                     event.pid,
                     event.ppid,
                     event.exit_code,
+                    signal_info,
                 );
             } else {
                 print!(
-                    "{:^20}{:<7}{:<16}{:<8}{:<8}[{}]",
+                    "{:^20}{:<7}{:<16}{:<8}{:<8}[{}] {}",
                     now.format("%Y-%m-%d %H:%M:%S"),
                     "EXIT",
-                    trans(event.comm.as_ptr()),
+                    unsafe { bytes_to_string(event.comm.as_ptr()) },
                     event.pid,
                     event.ppid,
                     event.exit_code,
+                    signal_info
                 );
             }
 
@@ -126,20 +136,20 @@ fn main() -> Result<()> {
                     "{:^20.6}{:<7}{:<16}{:<8}{:<8}[{}]",
                     timestamp_us as f64 / 1000000_f64,
                     "EXEC",
-                    trans(event.comm.as_ptr()),
+                    unsafe { bytes_to_string(event.comm.as_ptr()) },
                     event.pid,
                     event.ppid,
-                    trans(event.filename.as_ptr())
+                    unsafe { bytes_to_string(event.filename.as_ptr()) },
                 );
             } else {
                 print!(
                     "{:^20}{:<7}{:<16}{:<8}{:<8}[{}]",
                     now.format("%Y-%m-%d %H:%M:%S"),
                     "EXEC",
-                    trans(event.comm.as_ptr()),
+                    unsafe { bytes_to_string(event.comm.as_ptr()) },
                     event.pid,
                     event.ppid,
-                    trans(event.filename.as_ptr())
+                    unsafe { bytes_to_string(event.filename.as_ptr()) },
                 );
             }
 
