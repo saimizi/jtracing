@@ -152,7 +152,7 @@ fn main() -> Result<()> {
 
     let perbuf = PerfBufferBuilder::new(skel.maps().pb())
         .sample_cb(handle_event)
-        .pages(32)
+        .pages(8) // 4k * 8 (pb map)
         .build()
         .with_context(|| "Failed to create perf buffer")?;
 

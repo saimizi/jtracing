@@ -24,6 +24,10 @@ path = "execsnoop_pb/execsnoop_pb.rs"
 name = "funccount"
 path = "funccount/funccount.rs"
 
+[[bin]]
+name = "eglswapbuffers"
+path = "eglswapbuffers/eglswapbuffers.rs"
+
 [dependencies]
 log = "0.4"
 jlogger = "0.1"

@@ -24,11 +24,13 @@ struct exectrace_event {
 	u32 pid;
 	char comm[TASK_COMM_LEN];
 	unsigned char ts[8];
+	unsigned char frame0[8];
+	u32 frame0_type;
 };
 
 struct {
 	__uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
-	__uint(max_entries, 8192);
+	__uint(max_entries, 1024);
 	__uint(key_size, sizeof(int));
 	__uint(value_size, sizeof(int));
 } exectrace_pb SEC(".maps");
@@ -113,6 +115,16 @@ int do_exec_trace(struct pt_regs *ctx) {
 
 	ekey.pid = pid;
 	bpf_get_current_comm(&ekey.comm, sizeof(ekey.comm));
+	if (bpf_get_stack(ctx, &ekey.frame0, sizeof(ekey.frame0), 0) <= 0) {
+		if (bpf_get_stack(ctx, &ekey.frame0, sizeof(ekey.frame0),
+					BPF_F_USER_STACK) <= 0) {
+			return 0;
+		} else {
+			ekey.frame0_type = 1;
+		}
+	} else {
+		ekey.frame0_type = 0;
+	}
 	ts = bpf_ktime_get_ns();
 
 

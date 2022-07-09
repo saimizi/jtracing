@@ -14,19 +14,23 @@ use {
     std::{
         collections::HashMap,
         ffi::{CStr, CString},
-        io::Cursor,
+        fs,
+        io::{BufRead, BufReader, Cursor},
+        path::{Path, PathBuf},
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
         },
         time::{Duration, Instant},
     },
-    tracelib::{bump_memlock_rlimit, bytes_to_string, ElfFile, ExecMap, SymbolAnalyzer},
+    tracelib::{
+        bump_memlock_rlimit, bytes_to_string, ElfFile, ExecMap, KernelMap, KernelSymbolEntry,
+        NmSymbolType, SymbolAnalyzer,
+    },
 };
 
 #[path = "bpf/funccount.skel.rs"]
 mod funccount;
-
 use funccount::*;
 
 type StackEvent = funccount_bss_types::stacktrace_event;
@@ -81,22 +85,25 @@ struct Cli {
     #[clap(short = 'p', long)]
     pid: Option<i32>,
 
-    ///Only trace porcess with specified NAME.
-    #[clap(short = 'n', long)]
-    name: Option<String>,
+    ///File that store symbols to be traced.
+    ///one symbol per line
+    #[clap(short = 'S', long = "symbol-file")]
+    symbol_file: Option<String>,
 
     #[clap()]
     args: Vec<String>,
 }
 
-enum TraceResult {
-    Stack(StackTraceResult),
-    Exec(ExecTraceResult),
+struct TraceResult {
+    stack: HashMap<String, Vec<StackTraceResult>>,
+    exec: Vec<ExecTraceResult>,
 }
 
 struct ExecTraceResult {
+    pid: u32,
     ts: u64,
-    entry: ExecTraceEvent,
+    comm: String,
+    probe: String,
 }
 
 struct StackTraceResult {
@@ -106,22 +113,55 @@ struct StackTraceResult {
     ustack: Vec<(u64, String, String)>,
 }
 
+fn probe_name(event: &StackTraceResult) -> &str {
+    if !event.kstack.is_empty() {
+        event.kstack.first().unwrap().1.as_str()
+    } else if !event.ustack.is_empty() {
+        event.ustack.first().unwrap().1.as_str()
+    } else {
+        "Unknown"
+    }
+}
+
 fn process_events(
     cli: &Cli,
     maps: &mut FunccountMaps,
-    result: &mut Vec<TraceResult>,
+    result: &mut TraceResult,
     symanalyzer: &mut SymbolAnalyzer,
     exec_map_hash: &mut HashMap<u32, ExecMap>,
 ) -> Result<()> {
     if cli.exec {
         let exectime = maps.exectime();
+        let show_limit = cli.count.unwrap_or(u32::MAX);
 
         for key in exectime.keys() {
             let mut entry = ExecTraceEvent::default();
             plain::copy_from_bytes(&mut entry, &key).expect("Corrupted event data");
             let ts: u64 = NativeEndian::read_u64(&entry.ts);
-            result.push(TraceResult::Exec(ExecTraceResult { ts, entry }));
+            let probe_addr = NativeEndian::read_u64(&entry.frame0);
+
+            let mut probe = String::from("Unknown");
+            if entry.frame0_type == 0 {
+                if let Ok(pname) = symanalyzer.ksymbol(probe_addr) {
+                    probe = pname;
+                }
+            } else if let Ok((_, pname, _file)) = symanalyzer.usymbol(entry.pid, probe_addr) {
+                probe = pname;
+            }
+
+            result.exec.push(ExecTraceResult {
+                pid: entry.pid,
+                ts,
+                comm: unsafe { bytes_to_string(entry.comm.as_ptr()) },
+                probe,
+            });
+
+            if result.exec.len() >= show_limit as usize {
+                break;
+            }
         }
+
+        result.exec.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap());
     } else {
         let stackcnt = maps.stackcnt();
         let stackmap = maps.stackmap();
@@ -201,50 +241,37 @@ fn process_events(
                     }
                 }
 
-                result.push(TraceResult::Stack(StackTraceResult {
+                let stack_trace_result = StackTraceResult {
                     cnt,
                     stack,
                     kstack,
                     ustack,
-                }));
+                };
+
+                let str_vec = result
+                    .stack
+                    .entry(probe_name(&stack_trace_result).to_string())
+                    .or_insert(Vec::new());
+                str_vec.push(stack_trace_result);
             }
         }
     }
     Ok(())
 }
 
-fn print_result(cli: &Cli, result: &Vec<TraceResult>, runtime_s: u64) -> Result<()> {
+fn print_result(cli: &Cli, result: &mut TraceResult, runtime_s: u64) -> Result<()> {
     let runtime_s = if runtime_s == 0 { 1 } else { runtime_s };
 
     println!();
 
-    let mut result_stack = vec![];
-    let mut result_exec = vec![];
-    let mut total_cnt = 0_u64;
-
-    for res in result {
-        match res {
-            TraceResult::Stack(sr) => {
-                total_cnt += sr.cnt;
-                result_stack.push(sr)
-            }
-            TraceResult::Exec(ex) => result_exec.push(ex),
-        }
-    }
-
-    result_stack.sort_by(|&a, &b| b.cnt.partial_cmp(&a.cnt).unwrap());
-    result_exec.sort_by(|&a, &b| a.ts.partial_cmp(&b.ts).unwrap());
-
     let show_limit = cli.count.unwrap_or(u32::MAX);
 
-    if !result_exec.is_empty() {
+    if !result.exec.is_empty() {
         let mut show_count = 0;
 
         println!("{:<12} {:<5} {:20} ", "Timestamp", "PID", "Command");
         let mut ts_previous = 0_u64;
-        for event in result_exec {
-            let pid = event.entry.pid;
-            let comm = unsafe { bytes_to_string(event.entry.comm.as_ptr()) };
+        for event in &result.exec {
             let ts = event.ts / 1000;
             let ts_show;
 
@@ -260,10 +287,11 @@ fn print_result(cli: &Cli, result: &Vec<TraceResult>, runtime_s: u64) -> Result<
             }
 
             println!(
-                "{:<12.6} {:<5} {:20}",
+                "{:<12.6} {:<5} {:20} {}",
                 ts_show as f64 / 1000000_f64,
-                pid,
-                comm,
+                event.pid,
+                event.comm,
+                event.probe
             );
 
             show_count += 1;
@@ -273,87 +301,97 @@ fn print_result(cli: &Cli, result: &Vec<TraceResult>, runtime_s: u64) -> Result<
         }
     }
 
-    if !result_stack.is_empty() {
+    if !result.stack.is_empty() {
         let mut show_count = 0;
 
-        println!(
-            "Total count: {}, {}counts/s",
-            total_cnt,
-            total_cnt / runtime_s
-        );
-        println!(
-            "  {:<5} {:20} {:<8} {:9} {:9}",
-            "PID", "COMMAND", "COUNTS", "PERCENT", "COUNTS/s"
-        );
+        for (_, (probe_name, result_stack)) in result.stack.iter_mut().enumerate() {
+            result_stack.sort_by(|a, b| a.cnt.partial_cmp(&b.cnt).unwrap());
 
-        if !cli.stack {
-            let mut pid_cnt = HashMap::new();
+            let mut total_cnt = 0;
+            result_stack.iter().for_each(|a| total_cnt += a.cnt);
 
-            for event in result_stack {
-                let pid = event.stack.pid;
-                let comm = unsafe { bytes_to_string(event.stack.comm.as_ptr()) };
-                let cnt = event.cnt;
+            println!(
+                "PROBE: {} COUNTS: {}, {} COUNTS/s",
+                probe_name,
+                total_cnt,
+                total_cnt / runtime_s
+            );
+            println!(
+                "  {:<5} {:20} {:<8} {:9} {:9}",
+                "PID", "COMMAND", "COUNTS", "PERCENT", "COUNTS/s"
+            );
 
-                let (_comm_, cnt_) = pid_cnt.entry(pid).or_insert((comm, 0_u64));
-                *cnt_ += cnt;
-            }
+            if !cli.stack {
+                let mut pid_cnt = HashMap::new();
 
-            for (_, (pid, (comm, cnt))) in pid_cnt.iter().enumerate() {
-                println!(
-                    "  {:<5} {:20} {:<8} {:5.2}% {:9}",
-                    pid,
-                    comm,
-                    cnt,
-                    (*cnt as f64 / total_cnt as f64) * 100_f64,
-                    cnt / runtime_s
-                );
-            }
-        } else {
-            for event in result_stack {
-                let pid = event.stack.pid;
-                let comm = unsafe { bytes_to_string(event.stack.comm.as_ptr()) };
-                let cnt = event.cnt;
+                for event in result_stack {
+                    let pid = event.stack.pid;
+                    let comm = unsafe { bytes_to_string(event.stack.comm.as_ptr()) };
+                    let cnt = event.cnt;
 
-                println!(
-                    "{:<5} {:20} {:<8} {:5.2}% {:9}",
-                    pid,
-                    comm,
-                    cnt,
-                    (cnt as f64 / total_cnt as f64) * 100_f64,
-                    cnt / runtime_s
-                );
-
-                let mut fno = 0;
-                for (addr, sym) in event.kstack.iter() {
-                    if cli.addr {
-                        println!("    {:3} {:20x} {}", fno, addr, sym);
-                    } else {
-                        println!("    {:3} {}", fno, sym);
-                    }
-
-                    fno -= 1;
+                    let (_comm_, cnt_) = pid_cnt.entry(pid).or_insert((comm, 0_u64));
+                    *cnt_ += cnt;
                 }
 
-                for (addr, symname, filename) in event.ustack.iter() {
-                    let mut filename_str = String::new();
-                    if cli.file {
-                        filename_str = format!("({})", filename);
-                    }
-
-                    if cli.addr {
-                        println!("    {:3} {:20x} {} {}", fno, addr, symname, filename_str);
-                    } else {
-                        println!("    {:3} {} {}", fno, symname, filename_str);
-                    }
-
-                    fno -= 1;
+                for (_, (pid, (comm, cnt))) in pid_cnt.iter().enumerate() {
+                    println!(
+                        "  {:<5} {:20} {:<8} {:5.2}% {:9}",
+                        pid,
+                        comm,
+                        cnt,
+                        (*cnt as f64 / total_cnt as f64) * 100_f64,
+                        cnt / runtime_s
+                    );
                 }
+            } else {
+                for event in result_stack {
+                    let pid = event.stack.pid;
+                    let comm = unsafe { bytes_to_string(event.stack.comm.as_ptr()) };
+                    let cnt = event.cnt;
 
-                show_count += 1;
-                if show_count >= show_limit {
-                    break;
+                    println!(
+                        "{:<5} {:20} {:<8} {:5.2}% {:9}",
+                        pid,
+                        comm,
+                        cnt,
+                        (cnt as f64 / total_cnt as f64) * 100_f64,
+                        cnt / runtime_s
+                    );
+
+                    let mut fno = 0;
+                    for (addr, sym) in event.kstack.iter() {
+                        if cli.addr {
+                            println!("    {:3} {:20x} {}", fno, addr, sym);
+                        } else {
+                            println!("    {:3} {}", fno, sym);
+                        }
+
+                        fno -= 1;
+                    }
+
+                    for (addr, symname, filename) in event.ustack.iter() {
+                        let mut filename_str = String::new();
+                        if cli.file {
+                            filename_str = format!("({})", filename);
+                        }
+
+                        if cli.addr {
+                            println!("    {:3} {:20x} {} {}", fno, addr, symname, filename_str);
+                        } else {
+                            println!("    {:3} {} {}", fno, symname, filename_str);
+                        }
+
+                        fno -= 1;
+                    }
+
+                    show_count += 1;
+                    if show_count >= show_limit {
+                        break;
+                    }
                 }
             }
+
+            println!();
         }
 
         return Ok(());
@@ -416,8 +454,11 @@ fn main() -> Result<()> {
     }
 
     let mut skel = open_skel.load().with_context(|| "Failed to load bpf.")?;
+    let mut result = TraceResult {
+        stack: HashMap::new(),
+        exec: Vec::new(),
+    };
 
-    let mut result = Vec::new();
     let mut links = vec![];
     let mut exec_map_hash = HashMap::<u32, ExecMap>::new();
     let mut runtime_s;
@@ -441,27 +482,76 @@ fn main() -> Result<()> {
 
         let perfbuf = PerfBufferBuilder::new(skel.maps().exectrace_pb())
             .sample_cb(handle_exec_trace)
-            .pages(32)
+            .pages(2)
             .build()
             .with_context(|| "Failed to create perf buffer")?;
 
-        for arg in &cli.args {
+        let km = KernelMap::new(None)?;
+        let tracepoints: Vec<&str> = include_str!("tracepoints").split("\n").collect();
+        let mut sym_to_trace = &cli.args;
+        let mut sym_to_trace_vec = vec![];
+
+        if sym_to_trace.is_empty() {
+            let sf = match cli.symbol_file {
+                Some(ref a) => a.clone(),
+                None => "./funccount.sym".to_owned(),
+            };
+
+            let sfp = Path::new(&sf);
+            if sfp.is_file() {
+                println!("Search symbols from {}", sf);
+
+                if let Ok(f) = fs::File::open(sfp) {
+                    let mut buf = String::new();
+                    let mut reader = BufReader::new(f);
+
+                    loop {
+                        match reader.read_line(&mut buf) {
+                            Ok(s) if s > 0 => sym_to_trace_vec.push(buf.clone()),
+                            _ => break,
+                        }
+                    }
+
+                    sym_to_trace = &sym_to_trace_vec;
+                }
+            }
+        }
+
+        if sym_to_trace.is_empty() {
+            return Err(Error::msg("No symbole file found."));
+        }
+
+        for arg in sym_to_trace {
             let mut processed = false;
 
-            let tre = Regex::new(r"t:([a-z|0-9|_]+):([a-z|0-9|_]+)")?;
+            let tre = Regex::new(r"t:(.+):(.+)")?;
             if tre.is_match(arg) {
                 for g in tre.captures_iter(arg) {
-                    let tp_category = &g[1];
-                    let tp_name = &g[2];
+                    let pattern = format!("^{}:{}$", &g[1], &g[2]);
+                    let re = Regex::new(&pattern)?;
+                    let mut tps = vec![];
 
-                    println!("Attaching Tracepoint {}:{}.", tp_category, tp_name);
-                    let link = skel
-                        .progs_mut()
-                        .stacktrace_tp()
-                        .attach_tracepoint(tp_category, tp_name)
-                        .with_context(|| format!("Failed to attach {}.", arg))?;
+                    for &tp in &tracepoints {
+                        if re.is_match(tp) {
+                            let tmp: Vec<&str> = tp.split(":").collect();
+                            tps.push((tmp[0], tmp[1]));
+                        }
+                    }
 
-                    links.push(link);
+                    if tps.is_empty() {
+                        return Err(Error::msg(format!("Invalid symbol: {}", arg)));
+                    }
+
+                    println!("Attaching {} Tracepoint.", tps.len());
+                    for (tp_category, tp_name) in tps.iter() {
+                        let link = skel
+                            .progs_mut()
+                            .stacktrace_tp()
+                            .attach_tracepoint(tp_category, tp_name)
+                            .with_context(|| format!("Failed to attach {}.", arg))?;
+
+                        links.push(link);
+                    }
                     processed = true;
                 }
             }
@@ -480,47 +570,94 @@ fn main() -> Result<()> {
             if tre.is_match(arg) {
                 for g in tre.captures_iter(arg) {
                     let file = &g[1];
-                    let symbol = &g[2];
+                    let elf = ElfFile::new(file)?;
+                    let pattern = format!("^{}$", &g[2]);
+                    let re = Regex::new(&pattern)?;
+                    let mut symbols = vec![];
 
-                    let elf_file = ElfFile::new(file)?;
-                    let offset = elf_file.find_addr(symbol)? as usize;
+                    for &sy in elf.symobol_vec().iter() {
+                        if re.is_match(sy.name()) {
+                            symbols.push((sy.name(), sy.start()));
+                        }
+                    }
 
-                    println!("Attaching uprobe {}:{}.", file, symbol);
-                    /*
-                     * Parameter
-                     *  pid > 0: target process to trace
-                     *  pid == 0 : trace self
-                     *  pid == -1 : trace all processes
-                     * See bpf_program__attach_uprobe()
-                     */
-                    let link = skel
-                        .progs_mut()
-                        .stacktrace_ub()
-                        .attach_uprobe(false, pid, file, offset)
-                        .with_context(|| format!("Failed to attach {}.", arg))?;
+                    if symbols.is_empty() {
+                        return Err(Error::msg(format!("Invalid symbol: {}", arg)));
+                    }
 
-                    links.push(link);
-                    processed = true;
+                    let num = symbols.len();
+                    if num > 100 {
+                        log::warn!(
+                            "Tracing too many uprobe symbols ({}) maybe not what you want.",
+                            num
+                        );
+                    } else {
+                        println!("Attaching {} Uprobes.", symbols.len());
+                    }
+
+                    for (_symbol, offset) in symbols {
+                        /*
+                         * Parameter
+                         *  pid > 0: target process to trace
+                         *  pid == 0 : trace self
+                         *  pid == -1 : trace all processes
+                         * See bpf_program__attach_uprobe()
+                         */
+                        let link = skel
+                            .progs_mut()
+                            .stacktrace_ub()
+                            .attach_uprobe(false, pid, file, offset as usize)
+                            .with_context(|| format!("Failed to attach {}.", arg))?;
+
+                        links.push(link);
+                    }
                 }
+                processed = true;
             }
 
             if processed {
                 continue;
             }
 
-            let tre = Regex::new(r"(k:)*([a-z|0-9|_]+)")?;
+            let tre = Regex::new(r"(k:)*(.+)")?;
             if tre.is_match(arg) {
                 for g in tre.captures_iter(arg) {
-                    let func_name = &g[2];
+                    let mut func_names = vec![];
+                    let pattern = format!("^{}$", &g[2]);
+                    let re = Regex::new(&pattern)?;
 
-                    println!("Attaching Kprobe {}.", func_name);
-                    let link = skel
-                        .progs_mut()
-                        .stacktrace_kb()
-                        .attach_kprobe(false, func_name)
-                        .with_context(|| format!("Failed to attach {}.", arg))?;
+                    for &sy in km.symobol_vec().iter() {
+                        if sy.ktype() != NmSymbolType::Text {
+                            continue;
+                        }
+                        if re.is_match(sy.name()) {
+                            func_names.push(sy.name());
+                        }
+                    }
 
-                    links.push(link);
+                    if func_names.is_empty() {
+                        return Err(Error::msg(format!("Invalid symbol: {}", arg)));
+                    }
+
+                    let num = func_names.len();
+                    if num > 100 {
+                        log::warn!(
+                            "Tracing too many kprobe symbols ({}) maybe not what you want.",
+                            num
+                        );
+                    } else {
+                        println!("Attaching {} Kprobes.", num);
+                    }
+
+                    for func_name in func_names {
+                        let link = skel
+                            .progs_mut()
+                            .stacktrace_kb()
+                            .attach_kprobe(false, func_name)
+                            .with_context(|| format!("Failed to attach {}.", arg))?;
+
+                        links.push(link);
+                    }
                     processed = true;
                 }
             }
@@ -579,6 +716,6 @@ fn main() -> Result<()> {
     )?;
 
     runtime_s += start2.elapsed().as_secs();
-    print_result(&cli, &result, runtime_s)?;
+    print_result(&cli, &mut result, runtime_s)?;
     Ok(())
 }

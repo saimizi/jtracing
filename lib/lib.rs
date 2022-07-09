@@ -23,6 +23,9 @@ pub mod tracelog;
 pub use kprobe::Kprobe;
 pub use symbolanalyzer::ElfFile;
 pub use symbolanalyzer::ExecMap;
+pub use symbolanalyzer::KernelMap;
+pub use symbolanalyzer::KernelSymbolEntry;
+pub use symbolanalyzer::NmSymbolType;
 pub use symbolanalyzer::SymbolAnalyzer;
 pub use tracelog::TraceLog;
 

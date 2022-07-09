@@ -24,7 +24,7 @@ pub fn cpp_demangle_sym(sym: &str) -> String {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
 pub enum NmSymbolType {
     Absolute,
     BssData,
@@ -74,11 +74,7 @@ impl KernelSymbolEntry {
         self.name.as_str()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    pub fn len(&self) -> u64 {
+    pub fn size(&self) -> u64 {
         self.len
     }
 
@@ -103,109 +99,11 @@ impl KernelSymbolEntry {
     }
 }
 
-pub struct ExecMap {
-    entries: Vec<SymbolEntry>,
-    pid: u32,
-    file_cache: HashMap<String, ElfFile>,
-}
-
-impl ExecMap {
-    pub fn new(pid: u32) -> Result<Self> {
-        let mapf = fs::OpenOptions::new()
-            .read(true)
-            .open(format!("/proc/{}/maps", pid))?;
-        let mut reader = BufReader::new(mapf);
-        let mut entries = Vec::new();
-        // match something like
-        // 7fadf15000-7fadf1c000 r-xp 00000000 b3:02 12147                          /usr/lib/libipcon.so.0.0.0
-        let re = Regex::new(
-            r"^([0-9|a-f]+)-([0-9|a-f]+) r\-xp ([0-9|a-f]+ [0-9|a-f|:]+ [0-9]+ +)(/[a-z|A-Z|0-9|\.|\-|_|/|:]+.*)\n$",
-        )?;
-
-        loop {
-            let mut l = String::new();
-
-            let len = reader.read_line(&mut l)?;
-            if len == 0 {
-                break;
-            }
-
-            for g in re.captures_iter(&l) {
-                let start = addr_str_to_u64(&g[1])?;
-                let end = addr_str_to_u64(&g[2])?;
-                let file = &g[4].trim_end_matches('\n').trim().to_string();
-
-                entries.push(SymbolEntry {
-                    start,
-                    size: end - start,
-                    name: file.trim_end_matches('\n').trim().to_string(),
-                });
-            }
-        }
-
-        Ok(ExecMap {
-            entries,
-            pid,
-            file_cache: HashMap::new(),
-        })
-    }
-
-    pub fn symbol(&mut self, addr: u64) -> Result<(u64, String, String)> {
-        let mut keys = String::new();
-
-        for entry in &self.entries {
-            keys.push_str(&format!(" {:x}:{:x}", entry.start(), entry.end()));
-            if entry.have(addr) {
-                let offset = addr - entry.start;
-                let elf = self
-                    .file_cache
-                    .entry(entry.name().to_string())
-                    .or_insert(ElfFile::new(entry.name())?);
-
-                if let Ok(sym) = elf.find_symbol(offset) {
-                    return Ok((offset, sym, entry.name().to_string()));
-                }
-
-                return Ok((offset, String::from("[unknown]"), entry.name.to_string()));
-            }
-        }
-
-        return Err(Error::msg(format!(
-            "Invalid addr {:x} for pid {}. Avaliable range: {}",
-            addr, self.pid, keys
-        )));
-    }
-}
-
-pub struct SymbolAnalyzer {
+pub struct KernelMap {
     kallsyms: Vec<KernelSymbolEntry>,
-    map: HashMap<u32, ExecMap>,
 }
 
-pub fn addr_str_to_u64(addr_str: &str) -> Result<u64> {
-    let mut u8array: [u8; 8] = [0; 8];
-    let mut fixed_str = String::from(addr_str.trim());
-
-    if fixed_str.len() % 2 != 0 {
-        fixed_str = format!("0{}", fixed_str);
-    }
-
-    let bytes = hex::decode(&fixed_str)?;
-
-    if bytes.len() > 8 {
-        return Err(Error::msg(format!(
-            "Invalid address {} bytes len: {}",
-            addr_str,
-            bytes.len()
-        )));
-    }
-
-    u8array[8 - bytes.len()..].clone_from_slice(&bytes[..]);
-
-    Ok(u64::from_be_bytes(u8array))
-}
-
-impl SymbolAnalyzer {
+impl KernelMap {
     pub fn new(symbolfile: Option<&str>) -> Result<Self> {
         let f = if let Some(sf) = symbolfile {
             fs::OpenOptions::new().read(true).open(sf)?
@@ -293,18 +191,10 @@ impl SymbolAnalyzer {
             addr = v.addr();
         }
 
-        Ok(SymbolAnalyzer {
-            kallsyms,
-            map: HashMap::new(),
-        })
+        Ok(KernelMap { kallsyms })
     }
 
-    pub fn ksymbol_str(&self, addr_str: &str) -> Result<String> {
-        let addr = addr_str_to_u64(addr_str)?;
-        self.ksymbol(addr)
-    }
-
-    pub fn ksymbol(&self, addr: u64) -> Result<String> {
+    pub fn symbol(&self, addr: u64) -> Result<String> {
         let search_symbol =
             |v: &Vec<KernelSymbolEntry>, start: usize, end: usize, addr: u64| -> Symbol {
                 let mut start = start;
@@ -329,6 +219,134 @@ impl SymbolAnalyzer {
         }
     }
 
+    pub fn symobol_vec(&self) -> Vec<&KernelSymbolEntry> {
+        let mut result = vec![];
+
+        self.kallsyms.iter().for_each(|entry| result.push(entry));
+        result
+    }
+}
+
+pub struct ExecMap {
+    entries: Vec<SymbolEntry>,
+    pid: u32,
+    file_cache: HashMap<String, ElfFile>,
+}
+
+impl ExecMap {
+    pub fn new(pid: u32) -> Result<Self> {
+        let mapf = fs::OpenOptions::new()
+            .read(true)
+            .open(format!("/proc/{}/maps", pid))?;
+        let mut reader = BufReader::new(mapf);
+        let mut entries = Vec::new();
+        // match something like
+        // 7fadf15000-7fadf1c000 r-xp 00000000 b3:02 12147                          /usr/lib/libipcon.so.0.0.0
+        let re = Regex::new(
+            r"^([0-9|a-f]+)-([0-9|a-f]+) r\-xp ([0-9|a-f]+ [0-9|a-f|:]+ [0-9]+ +)(/[a-z|A-Z|0-9|\.|\-|_|/|:]+.*)\n$",
+        )?;
+
+        loop {
+            let mut l = String::new();
+
+            let len = reader.read_line(&mut l)?;
+            if len == 0 {
+                break;
+            }
+
+            for g in re.captures_iter(&l) {
+                let start = addr_str_to_u64(&g[1])?;
+                let end = addr_str_to_u64(&g[2])?;
+                let file = &g[4].trim_end_matches('\n').trim().to_string();
+
+                entries.push(SymbolEntry {
+                    start,
+                    size: end - start,
+                    name: file.trim_end_matches('\n').trim().to_string(),
+                });
+            }
+        }
+
+        Ok(ExecMap {
+            entries,
+            pid,
+            file_cache: HashMap::new(),
+        })
+    }
+
+    pub fn symbol(&mut self, addr: u64) -> Result<(u64, String, String)> {
+        let mut keys = String::new();
+
+        for entry in &self.entries {
+            keys.push_str(&format!(" {:x}:{:x}", entry.start(), entry.end()));
+            if entry.have(addr) {
+                let offset = addr - entry.start;
+                let elf = self
+                    .file_cache
+                    .entry(entry.name().to_string())
+                    .or_insert(ElfFile::new(entry.name())?);
+
+                if let Ok(sym) = elf.find_symbol(offset) {
+                    return Ok((offset, sym, entry.name().to_string()));
+                }
+
+                return Ok((offset, String::from("[unknown]"), entry.name.to_string()));
+            }
+        }
+
+        return Err(Error::msg(format!(
+            "Invalid addr {:x} for pid {}. Avaliable range: {}",
+            addr, self.pid, keys
+        )));
+    }
+}
+
+pub struct SymbolAnalyzer {
+    kmap: KernelMap,
+    map: HashMap<u32, ExecMap>,
+}
+
+pub fn addr_str_to_u64(addr_str: &str) -> Result<u64> {
+    let mut u8array: [u8; 8] = [0; 8];
+    let mut fixed_str = String::from(addr_str.trim());
+
+    if fixed_str.len() % 2 != 0 {
+        fixed_str = format!("0{}", fixed_str);
+    }
+
+    let bytes = hex::decode(&fixed_str)?;
+
+    if bytes.len() > 8 {
+        return Err(Error::msg(format!(
+            "Invalid address {} bytes len: {}",
+            addr_str,
+            bytes.len()
+        )));
+    }
+
+    u8array[8 - bytes.len()..].clone_from_slice(&bytes[..]);
+
+    Ok(u64::from_be_bytes(u8array))
+}
+
+impl SymbolAnalyzer {
+    pub fn new(symbolfile: Option<&str>) -> Result<Self> {
+        Ok(SymbolAnalyzer {
+            kmap: KernelMap::new(symbolfile)?,
+            map: HashMap::new(),
+        })
+    }
+
+    pub fn ksymbol_str(&self, addr_str: &str) -> Result<String> {
+        let addr = addr_str_to_u64(addr_str)?;
+        self.ksymbol(addr)
+    }
+
+    pub fn ksymbol(&self, addr: u64) -> Result<String> {
+        self.kmap.symbol(addr)
+    }
+
+    /// Return (addr, symbole name, file name).
     pub fn usymbol(&mut self, pid: u32, addr: u64) -> Result<(u64, String, String)> {
         let em = self.map.entry(pid).or_insert(ExecMap::new(pid)?);
         em.symbol(addr)
@@ -466,12 +484,19 @@ impl ElfFile {
     pub fn name(&self) -> &str {
         self.name.as_str()
     }
+
+    pub fn symobol_vec(&self) -> Vec<&SymbolEntry> {
+        let mut result = vec![];
+
+        self.sym_addr.iter().for_each(|entry| result.push(entry.1));
+        result
+    }
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn new() {
+    fn symbolanalyzer01() {
         use crate::symbolanalyzer::SymbolAnalyzer;
         let sa = SymbolAnalyzer::new(Some("testfiles/test_symbol")).unwrap();
 
@@ -490,5 +515,13 @@ mod tests {
             367459894672_u64
         );
         assert_eq!(addr_str_to_u64("ffffffffffffffff").unwrap(), u64::MAX);
+    }
+
+    #[test]
+    fn kernelmap01 () {
+        use crate::symbolanalyzer::KernelMap;
+        let km = KernelMap::new(Some("testfiles/test_symbol")).unwrap();
+
+        assert_eq!(km.symobol_vec().len(), 205982);
     }
 }

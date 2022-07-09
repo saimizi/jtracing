@@ -31,24 +31,18 @@ struct {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
-	__uint(max_entries, 8192);
+	__uint(max_entries, 4192);
 	__type(key, int);
 	__type(value, int);
 } pb SEC(".maps");
 
 struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);
-	__uint(max_entries, 8192);
-	__type(key, pid_t);
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 2);
+	__type(key, int);
 	__type(value, struct event);
 } exec_heap SEC(".maps");
 
-struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);
-	__uint(max_entries, 8192);
-	__type(key, pid_t);
-	__type(value, struct event);
-} exit_heap SEC(".maps");
 
 const volatile unsigned long long min_duration_ns = 0;
 
@@ -67,6 +61,7 @@ int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
 	ts = bpf_ktime_get_ns();
 	bpf_map_update_elem(&exec_start, &pid, &ts, BPF_ANY);
 
+
 	/* don't emit exec events when minimum duration is specified */
 	if (min_duration_ns)
 		return 0;
@@ -82,14 +77,10 @@ int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
 	fname_off = ctx->__data_loc_filename & 0xFFFF;
 	bpf_probe_read_str(&e->filename, sizeof(e->filename), (void *)ctx + fname_off);
 
-	int err = bpf_map_update_elem(&exec_heap, &pid, e, BPF_ANY);
+	int exec_index = 0;
+	int err = bpf_map_update_elem(&exec_heap, &exec_index, e, BPF_ANY);
 	if (err)
 		return 0;
-
-	e = bpf_map_lookup_elem(&exec_heap, &pid);
-	if (!e) {
-		return 0;
-	}
 
 	bpf_perf_event_output(ctx, &pb, BPF_F_CURRENT_CPU, e, sizeof(*e));
 
@@ -137,14 +128,10 @@ int handle_exit(struct trace_event_raw_sched_process_template* ctx)
 	e->exit_code = (BPF_CORE_READ(task, exit_code) >> 8) & 0xff;
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
-	int err = bpf_map_update_elem(&exit_heap, &pid, e, BPF_ANY);
+	int exit_index = 1;
+	int err = bpf_map_update_elem(&exec_heap, &exit_index, e, BPF_ANY);
 	if (err)
 		return 0;
-
-	e= bpf_map_lookup_elem(&exit_heap, &pid);
-	if (!e) {
-		return 0;
-	}
 
 	bpf_perf_event_output(ctx, &pb, BPF_F_CURRENT_CPU, e, sizeof(*e));
 
