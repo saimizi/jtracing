@@ -103,6 +103,7 @@ int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
 	return 0;
 }
 
+#if 0
 struct trace_event_raw_sys_enter_kill {
 	struct trace_entry ent;
 	int __syscall_nr;
@@ -125,6 +126,24 @@ int handle_kill(struct trace_event_raw_sys_enter_kill *ctx)
 	//bpf_printk("%s kill sig %d  to pid %d\n", entry.comm, entry.sig, killed_pid);
 
 	return 0;
+}
+#endif
+
+SEC("kprobe/do_send_sig_info")
+int BPF_KPROBE(do_send_sig_info, int sig, struct kernel_siginfo *info, struct task_struct *p, enum pid_type type)
+{
+	struct kill_event entry = {};
+	struct task_struct *task;
+
+	entry.pid = bpf_get_current_pid_tgid() >> 32;
+	bpf_get_current_comm(&entry.comm, sizeof(entry.comm));
+	entry.sig = sig;
+	u32 killed_pid;
+	bpf_core_read(&killed_pid, sizeof(killed_pid), &p->pid);
+
+	bpf_map_update_elem(&kill_events, &killed_pid, &entry, BPF_ANY);
+
+	//bpf_printk("%s kill sig %d  to pid %d\n", entry.comm, entry.sig, killed_pid);
 }
 
 SEC("tp/sched/sched_process_exit")

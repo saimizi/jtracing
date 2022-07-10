@@ -59,3 +59,6 @@ strip = true
 libbpf-cargo = "0.11"
 jlogger = "0.1"
 log = "0.4"
+
+[patch.crates-io]
+libbpf-cargo = {git = 'https://github.com/saimizi/libbpf-rs.git', branch="release-0.17_0.11"}

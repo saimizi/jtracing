@@ -1,12 +1,12 @@
 #[allow(unused)]
 use {
-    jlogger::{jdebug, jinfo, jwarn, jerror, JloggerBuilder},
+    jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
     std::{
+        env,
         fs::{canonicalize, create_dir_all, remove_file},
         os::unix::fs::symlink,
         path::Path,
-        env,
-    }
+    },
 };
 
 extern crate libbpf_cargo;
@@ -51,9 +51,7 @@ fn main() {
                 println!("{}", cargo_search_path);
             }
             clang_args.push_str(" -D__TARGET_ARCH_arm64")
-        }
-
-        if target == "x86_64-unknown-linux-gnu" {
+        } else if target == "x86_64-unknown-linux-gnu" {
             clang_args.push_str(" -D__TARGET_ARCH_x86")
         }
 
@@ -63,13 +61,15 @@ fn main() {
             abs_path_vmlinux_inc.as_path().to_str().unwrap()
         ));
 
+        jinfo!("clang_args: {}", clang_args);
+
         SkeletonBuilder::new(&skle_c)
+            .debug(true)
             .clang_args(&clang_args)
             .generate(&skel)
             .expect("bpf compilation failed");
         println!("cargo:rerun-if-changed={}", &skle_c);
 
-        jinfo!("clang_args: {}", clang_args);
 
         let skle_path_dst = format!("{}/{}.skel.rs", app_bpf_dir, app);
         let _ = remove_file(&skle_path_dst);
