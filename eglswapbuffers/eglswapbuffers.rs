@@ -1,27 +1,23 @@
 #[allow(unused)]
 use {
-    anyhow::{Context, Error, Result},
-    byteorder::ByteOrder,
-    byteorder::{BigEndian, LittleEndian, NativeEndian, ReadBytesExt},
-    clap::Parser,
     jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
-    libbpf_rs::{set_print, MapFlags, PerfBuffer, PerfBufferBuilder, PrintLevel},
     log::{debug, error, info, warn, LevelFilter},
-    perf_event_open_sys::{self as peos, bindings::perf_event_attr},
+    anyhow::{Context, Error, Result},
+};
+
+use {
+    clap::Parser,
+    libbpf_rs::{set_print, MapFlags, PrintLevel},
     plain::Plain,
-    regex::Regex,
-    std::mem::transmute,
     std::{
         collections::HashMap,
-        ffi::{CStr, CString},
-        io::Cursor,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
         },
         time::{Duration, Instant},
     },
-    tracelib::{bump_memlock_rlimit, bytes_to_string, ElfFile, ExecMap, SymbolAnalyzer},
+    tracelib::{bump_memlock_rlimit, bytes_to_string, ElfFile},
 };
 
 #[path = "bpf/eglswapbuffers.skel.rs"]

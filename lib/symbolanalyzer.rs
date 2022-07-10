@@ -1,15 +1,15 @@
 #[allow(unused)]
 use {
     anyhow::{Error, Result},
-    cpp_demangle::{BorrowedSymbol, DemangleOptions},
     jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
     log::{debug, error, info, warn, LevelFilter},
+};
+
+use {
     object::{Object, ObjectSymbol},
     regex::Regex,
     std::{
         collections::HashMap,
-        ffi::CStr,
-        fmt::Display,
         fs,
         io::{BufRead, BufReader},
         path::Path,
@@ -518,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn kernelmap01 () {
+    fn kernelmap01() {
         use crate::symbolanalyzer::KernelMap;
         let km = KernelMap::new(Some("testfiles/test_symbol")).unwrap();
 

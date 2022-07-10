@@ -1,31 +1,31 @@
 #[allow(unused)]
 use {
+    jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
+    log::{debug, error, info, warn, LevelFilter},
+};
+
+use {
     anyhow::{Context, Error, Result},
     byteorder::ByteOrder,
-    byteorder::{BigEndian, LittleEndian, NativeEndian, ReadBytesExt},
+    byteorder::NativeEndian,
     clap::Parser,
-    jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
-    libbpf_rs::{set_print, MapFlags, PerfBuffer, PerfBufferBuilder, PrintLevel},
-    log::{debug, error, info, warn, LevelFilter},
-    perf_event_open_sys::{self as peos, bindings::perf_event_attr},
+    libbpf_rs::{set_print, MapFlags, PerfBufferBuilder, PrintLevel},
     plain::Plain,
     regex::Regex,
-    std::mem::transmute,
     std::{
         collections::HashMap,
-        ffi::{CStr, CString},
         fs,
-        io::{BufRead, BufReader, Cursor},
-        path::{Path, PathBuf},
+        io::{BufRead, BufReader},
+        path::Path,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
         },
-        time::{Duration, Instant},
+        time::Instant,
     },
     tracelib::{
-        bump_memlock_rlimit, bytes_to_string, ElfFile, ExecMap, KernelMap, KernelSymbolEntry,
-        NmSymbolType, SymbolAnalyzer,
+        bump_memlock_rlimit, bytes_to_string, ElfFile, ExecMap, KernelMap, NmSymbolType,
+        SymbolAnalyzer,
     },
 };
 

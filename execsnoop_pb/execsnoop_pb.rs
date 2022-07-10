@@ -1,18 +1,17 @@
 #[allow(unused)]
 use {
     anyhow::{Context, Error, Result},
-    clap::Parser,
     jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
-    libbpf_rs::{set_print, PerfBuffer, PerfBufferBuilder, PrintLevel},
     log::{debug, error, info, warn},
+};
+
+use {
+    clap::Parser,
+    libbpf_rs::{set_print, PerfBufferBuilder, PrintLevel},
     plain::Plain,
-    std::{
-        ffi::{CStr, CString},
-        sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc,
-        },
-        time::Instant,
+    std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
     },
     tracelib::{bump_memlock_rlimit, bytes_to_string},
 };
