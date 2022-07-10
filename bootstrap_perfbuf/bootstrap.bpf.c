@@ -16,6 +16,13 @@ struct {
 } exec_start SEC(".maps");
 
 struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 8192);
+	__type(key, pid_t);
+	__type(value, struct kill_event);
+} kill_events SEC(".maps");
+
+struct {
 	__uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
 	__uint(max_entries, 8192);
 	__type(key, int);
@@ -82,6 +89,25 @@ int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
 	return 0;
 }
 
+SEC("kprobe/do_send_sig_info")
+int BPF_KPROBE(do_send_sig_info, int sig, struct kernel_siginfo *info, struct task_struct *p, enum pid_type type)
+{
+	struct kill_event entry = {};
+	struct task_struct *task;
+
+	entry.pid = bpf_get_current_pid_tgid() >> 32;
+	bpf_get_current_comm(&entry.comm, sizeof(entry.comm));
+	entry.sig = sig;
+	u32 killed_pid;
+	bpf_core_read(&killed_pid, sizeof(killed_pid), &p->pid);
+
+	bpf_map_update_elem(&kill_events, &killed_pid, &entry, BPF_ANY);
+	
+	//bpf_printk("%s kill sig %d  to pid %d\n", entry.comm, entry.sig, killed_pid);
+
+	return 0;
+}
+
 SEC("tp/sched/sched_process_exit")
 int handle_exit(struct trace_event_raw_sched_process_template* ctx)
 {
@@ -122,6 +148,16 @@ int handle_exit(struct trace_event_raw_sched_process_template* ctx)
 	e->ppid = BPF_CORE_READ(task, real_parent, tgid);
 	e->exit_code = (BPF_CORE_READ(task, exit_code) >> 8) & 0xff;
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
+
+	struct kill_event *ke = bpf_map_lookup_elem(&kill_events, &pid);
+	if (ke) {
+		e->last_signal_pid = ke->pid;
+		__builtin_memcpy(&e->last_signal_comm, &ke->comm, sizeof(e->last_signal_comm));
+		e->last_sig = ke->sig;
+		bpf_map_delete_elem(&kill_events, &pid);
+	} else {
+		e->last_sig = -1; //-1 means no signal.
+	}
 
 	int err = bpf_map_update_elem(&exit_heap, &pid, e, BPF_ANY);
 	if (err)

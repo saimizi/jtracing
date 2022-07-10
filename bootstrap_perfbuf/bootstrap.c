@@ -80,14 +80,33 @@ void handle_event(void *ctx, int cpu, void *data, unsigned int data_sz)
 	struct tm *tm;
 	char ts[32];
 	time_t t;
+	char *signals[] = {
+		"HUP","INT","QUIT","ILL","TRAP","ABRT","BUS","FPE","KILL","USR1",
+		"SEGV","USR2","PIPE","ALRM","TERM","STKFLT","CHLD",
+		"CONT","STOP","TSTP","TTIN","TTOU","URG","XCPU","XFSZ",
+		"VTALRM","PROF","WINCH","IO","PWR","SYS","RTMIN",
+		"RTMIN+1","RTMIN+2","RTMIN+3","RTMIN+4","RTMIN+5",
+		"RTMIN+6","RTMIN+7","RTMIN+8","RTMIN+9","RTMIN+10",
+		"RTMIN+11","RTMIN+12","RTMIN+13","RTMIN+14","RTMIN+15",
+		"RTMAX-14","RTMAX-13","RTMAX-12","RTMAX-11","RTMAX-10",
+		"RTMAX-9","RTMAX-8","RTMAX-7","RTMAX-6","RTMAX-5",
+		"RTMAX-4","RTMAX-3","RTMAX-2","RTMAX-1","RTMAX",
+	};
 
 	time(&t);
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
 	if (e->exit_event) {
-		printf("%-8s %-5s %-16s %-7d %-7d [%u]",
-		       ts, "EXIT", e->comm, e->pid, e->ppid, e->exit_code);
+		if (e->last_sig > 0) {
+			printf("%-8s %-5s %-16s %-7d %-7d [%u] [%s=%d <- %s(%d)]",
+			       ts, "EXIT", e->comm, e->pid, e->ppid, e->exit_code,
+			       signals[e->last_sig -1], e->last_sig, e->last_signal_comm, e->last_signal_pid);
+		} else {
+			printf("%-8s %-5s %-16s %-7d %-7d [%u]",
+			       ts, "EXIT", e->comm, e->pid, e->ppid, e->exit_code);
+		}
+
 		if (e->duration_ns)
 			printf(" (%llums)", e->duration_ns / 1000000);
 		printf("\n");

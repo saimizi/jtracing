@@ -14,6 +14,14 @@ struct event {
 	char comm[TASK_COMM_LEN];
 	char filename[MAX_FILENAME_LEN];
 	bool exit_event;
+	pid_t last_signal_pid;
+	char last_signal_comm[TASK_COMM_LEN];
+	int last_sig;
 };
 
+struct kill_event {
+	pid_t pid; //killer pid
+	int comm[TASK_COMM_LEN]; //killer comm
+	int sig;
+};
 #endif /* __BOOTSTRAP_H */
