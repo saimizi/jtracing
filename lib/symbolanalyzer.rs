@@ -395,7 +395,7 @@ impl ElfFile {
 
         let fpath = fpathbuf.as_path();
         if !fpath.is_file() {
-            return Err(Error::msg("Invalid ELF binary"));
+            return Err(Error::msg(format!("Invalid ELF binary : {}", file_name)));
         }
 
         let file = fs::File::open(fpath)?;
