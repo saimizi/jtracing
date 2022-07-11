@@ -305,7 +305,7 @@ fn print_result(cli: &Cli, result: &mut TraceResult, runtime_s: u64) -> Result<(
         let mut show_count = 0;
 
         for (_, (probe_name, result_stack)) in result.stack.iter_mut().enumerate() {
-            result_stack.sort_by(|a, b| a.cnt.partial_cmp(&b.cnt).unwrap());
+            result_stack.sort_by(|a, b| b.cnt.partial_cmp(&a.cnt).unwrap());
 
             let mut total_cnt = 0;
             result_stack.iter().for_each(|a| total_cnt += a.cnt);
