@@ -144,6 +144,8 @@ int BPF_KPROBE(do_send_sig_info, int sig, struct kernel_siginfo *info, struct ta
 	bpf_map_update_elem(&kill_events, &killed_pid, &entry, BPF_ANY);
 
 	//bpf_printk("%s kill sig %d  to pid %d\n", entry.comm, entry.sig, killed_pid);
+	
+	return 0;
 }
 
 SEC("tp/sched/sched_process_exit")
