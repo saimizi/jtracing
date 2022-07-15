@@ -119,16 +119,12 @@ struct trace_event_raw_sys_enter_execve{
 	char __data[0];
 };
 
-#define READ_ARG(N)						\
-{								\
-	ret = bpf_probe_read_user(&p, sizeof(p),		\
-			&ctx->argv[N]);				\
-	if (ret == 0) {						\
-		bpf_probe_read_user_str(&e->arg ## N,		\
-				sizeof(e->arg ## N), p);	\
-	} else {						\
-		e->arg ## N[0] = '\0';				\
-	}							\
+#define READ_ARG(N)									\
+{											\
+	char *p;									\
+	if (bpf_probe_read_user(&p, sizeof(p), &ctx->argv[N]) < 0 ||			\
+		bpf_probe_read_user_str(&e->arg ## N, sizeof(e->arg ## N), p) < 0)	\
+		e->arg ## N[0] = '\0';							\
 }
 
 SEC("tp/syscalls/sys_enter_execve")
