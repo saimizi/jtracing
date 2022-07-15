@@ -6,7 +6,11 @@
 #include <bpf/bpf_core_read.h>
 
 #define TASK_COMM_LEN 16
-#define MAX_FILENAME_LEN 127
+#define MAX_FILENAME_LEN 128
+
+#define ARG_LEN 128
+#define MAX_ARGS_NUM 10
+
 
 struct event {
 	int pid;
@@ -38,6 +42,19 @@ struct event {
 	 * 0x1: paraent comm saved in comm2;
 	 */
 	u32 flag;
+
+	char arg0[ARG_LEN];
+	char arg1[ARG_LEN];
+	char arg2[ARG_LEN];
+	char arg3[ARG_LEN];
+	char arg4[ARG_LEN];
+	char arg5[ARG_LEN];
+	char arg6[ARG_LEN];
+	char arg7[ARG_LEN];
+	char arg8[ARG_LEN];
+	char arg9[ARG_LEN];
+
+
 };
 
 struct kill_event {
@@ -102,6 +119,18 @@ struct trace_event_raw_sys_enter_execve{
 	char __data[0];
 };
 
+#define READ_ARG(N)						\
+{								\
+	ret = bpf_probe_read_user(&p, sizeof(p),		\
+			&ctx->argv[N]);				\
+	if (ret == 0) {						\
+		bpf_probe_read_user_str(&e->arg ## N,		\
+				sizeof(e->arg ## N), p);	\
+	} else {						\
+		e->arg ## N[0] = '\0';				\
+	}							\
+}
+
 SEC("tp/syscalls/sys_enter_execve")
 int handle_exec(struct trace_event_raw_sys_enter_execve *ctx)
 {
@@ -109,6 +138,7 @@ int handle_exec(struct trace_event_raw_sys_enter_execve *ctx)
 	pid_t pid, tid;
 	u64 ts;
 	u64 id = bpf_get_current_pid_tgid();
+	long ret;
 
 	int exec_index = 0;
 	struct event *e = bpf_map_lookup_elem(&exec_heap, &exec_index);
@@ -137,8 +167,23 @@ int handle_exec(struct trace_event_raw_sys_enter_execve *ctx)
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
 	char *p;
-	bpf_probe_read(&p, sizeof(p), &ctx->filename);
-	bpf_probe_read_user_str(&e->filename, sizeof(e->filename), p);
+	ret = bpf_probe_read_user(&p, sizeof(p), &ctx->filename);
+	if (ret == 0) {
+		bpf_probe_read_user_str(&e->filename, sizeof(e->filename), p);
+	} else {
+		e->filename[0] = '\0';
+	}
+
+	READ_ARG(0);
+	READ_ARG(1);
+	READ_ARG(2);
+	READ_ARG(3);
+	READ_ARG(4);
+	READ_ARG(5);
+	READ_ARG(6);
+	READ_ARG(7);
+	READ_ARG(8);
+	READ_ARG(9);
 
 	struct fork_event *fe = bpf_map_lookup_elem(&fork_events, &tid);
 	if (fe) {

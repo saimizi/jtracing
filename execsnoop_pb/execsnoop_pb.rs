@@ -146,6 +146,27 @@ fn main() -> Result<()> {
             }
             println!();
         } else if event.event_type == 0 {
+            let arg0 = unsafe { bytes_to_string(event.arg0.as_ptr()) };
+            let filename = unsafe { bytes_to_string(event.filename.as_ptr()) };
+            let mut args = String::new();
+
+            if !filename.is_empty() {
+                args.push_str(&filename);
+            } else {
+                args.push_str(&arg0);
+            }
+
+            args.push(' ');
+            args.push_str(unsafe { &bytes_to_string(event.arg1.as_ptr()) });
+            args.push(' ');
+            args.push_str(unsafe { &bytes_to_string(event.arg2.as_ptr()) });
+            args.push(' ');
+            args.push_str(unsafe { &bytes_to_string(event.arg3.as_ptr()) });
+            args.push(' ');
+            args.push_str(unsafe { &bytes_to_string(event.arg4.as_ptr()) });
+            args.push(' ');
+            args.push_str(unsafe { &bytes_to_string(event.arg5.as_ptr()) });
+
             let fork_info = {
                 if event.flag & 0x1 == 0x1 {
                     unsafe { format!("[{}]", bytes_to_string(event.comm2.as_ptr())) }
@@ -164,7 +185,7 @@ fn main() -> Result<()> {
                     event.pid,
                     event.ppid,
                     fork_info,
-                    unsafe { bytes_to_string(event.filename.as_ptr()) },
+                    args
                 );
             } else {
                 print!(
@@ -176,7 +197,7 @@ fn main() -> Result<()> {
                     event.pid,
                     event.ppid,
                     fork_info,
-                    unsafe { bytes_to_string(event.filename.as_ptr()) },
+                    args
                 );
             }
 
@@ -226,7 +247,7 @@ fn main() -> Result<()> {
 
     println!(
         "{:<20}{:<7}{:<16}{:<8}{:<8}{:<8}FILENAME/EXIT CODE/FORK INFO",
-        "TIME", "EVENT", "COMM", "TID","PID", "PPID"
+        "TIME", "EVENT", "COMM", "TID", "PID", "PPID"
     );
 
     let running = Arc::new(AtomicBool::new(true));
