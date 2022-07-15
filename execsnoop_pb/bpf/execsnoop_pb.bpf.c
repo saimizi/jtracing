@@ -93,16 +93,27 @@ struct {
 
 const volatile unsigned long long min_duration_ns = 0;
 
-SEC("tp/sched/sched_process_exec")
-int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
+struct trace_event_raw_sys_enter_execve{
+	struct trace_entry ent;
+	int __syscall_nr;
+	char *filename;
+	char *const *argv;
+	char *const *envp;
+	char __data[0];
+};
+
+SEC("tp/syscalls/sys_enter_execve")
+int handle_exec(struct trace_event_raw_sys_enter_execve *ctx)
 {
 	struct task_struct *task;
-	unsigned fname_off;
-	struct event entry ={};
-	struct event *e = &entry;
 	pid_t pid, tid;
 	u64 ts;
 	u64 id = bpf_get_current_pid_tgid();
+
+	int exec_index = 0;
+	struct event *e = bpf_map_lookup_elem(&exec_heap, &exec_index);
+	if (!e)
+		return 0;
 
 	/* remember time exec() was executed for this PID */
 	pid = id >> 32;
@@ -125,8 +136,9 @@ int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
 	e->ppid = BPF_CORE_READ(task, real_parent, tgid);
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
-	fname_off = ctx->__data_loc_filename & 0xFFFF;
-	bpf_probe_read_str(&e->filename, sizeof(e->filename), (void *)ctx + fname_off);
+	char *p;
+	bpf_probe_read(&p, sizeof(p), &ctx->filename);
+	bpf_probe_read_user_str(&e->filename, sizeof(e->filename), p);
 
 	struct fork_event *fe = bpf_map_lookup_elem(&fork_events, &tid);
 	if (fe) {
@@ -134,10 +146,6 @@ int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
 		e->flag |= 0x1;
 	} 
 
-	int exec_index = 0;
-	int err = bpf_map_update_elem(&exec_heap, &exec_index, e, BPF_ANY);
-	if (err)
-		return 0;
 
 	bpf_perf_event_output(ctx, &pb, BPF_F_CURRENT_CPU, e, sizeof(*e));
 
@@ -147,18 +155,21 @@ int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
 SEC("tp/sched/sched_process_fork")
 int handle_fork(struct trace_event_raw_sched_process_fork *ctx)
 {
-	struct event entry ={};
-	struct event *e = &entry;
 	struct fork_event fork_entry = {};
 	struct fork_event *efork = &fork_entry;
 	pid_t child_pid; 
 	pid_t parent_pid;
 
-	bpf_core_read(&child_pid, sizeof(child_pid), &ctx->child_pid);
-	bpf_core_read(&parent_pid, sizeof(parent_pid), &ctx->parent_pid);
+	int fork_index = 2;
+	struct event *e = bpf_map_lookup_elem(&exec_heap, &fork_index);
+	if (!e)
+		return 0;
+
+	bpf_probe_read(&child_pid, sizeof(child_pid), &ctx->child_pid);
+	bpf_probe_read(&parent_pid, sizeof(parent_pid), &ctx->parent_pid);
 
 	efork->pid = parent_pid;
-	bpf_core_read_str(&efork->comm, sizeof(efork->comm), &ctx->parent_comm);
+	bpf_probe_read_str(&efork->comm, sizeof(efork->comm), &ctx->parent_comm);
 	bpf_map_update_elem(&fork_events, &child_pid, efork, BPF_ANY);
 
 	e->event_type = 2;
@@ -166,12 +177,8 @@ int handle_fork(struct trace_event_raw_sched_process_fork *ctx)
 	e->pid = bpf_get_current_pid_tgid() >> 32;
 	e->ppid = parent_pid;
 	e->flag = 0;
-	bpf_core_read_str(&e->comm, sizeof(e->comm), &ctx->child_comm);
+	bpf_probe_read_str(&e->comm, sizeof(e->comm), &ctx->child_comm);
 	
-	int exec_index = 2;
-	int err = bpf_map_update_elem(&exec_heap, &exec_index, e, BPF_ANY);
-	if (err)
-		return 0;
 
 	bpf_perf_event_output(ctx, &pb, BPF_F_CURRENT_CPU, e, sizeof(*e));
 	return 0;
@@ -213,7 +220,7 @@ int BPF_KPROBE(do_send_sig_info, int sig, struct kernel_siginfo *info, struct ta
 	entry.sig = sig;
 
 	u32 killed_pid;
-	bpf_core_read(&killed_pid, sizeof(killed_pid), &p->pid);
+	bpf_probe_read(&killed_pid, sizeof(killed_pid), &p->pid);
 
 	bpf_map_update_elem(&kill_events, &killed_pid, &entry, BPF_ANY);
 
@@ -227,9 +234,14 @@ int handle_exit(struct trace_event_raw_sched_process_template* ctx)
 {
 	struct task_struct *task;
 	struct event entry ={};
-	struct event *e = &entry;
+	
 	pid_t pid, tid;
 	u64 id, ts, *start_ts, duration_ns = 0;
+
+	int exit_index = 1;
+	struct event *e = bpf_map_lookup_elem(&exec_heap, &exit_index);
+	if (!e)
+		return 0;
 	
 	/* get PID and TID of exiting thread/process */
 	id = bpf_get_current_pid_tgid();
@@ -277,11 +289,6 @@ int handle_exit(struct trace_event_raw_sched_process_template* ctx)
 		bpf_map_delete_elem(&fork_events, &pid);
 		e->flag |= 0x1;
 	} 
-
-	int exit_index = 1;
-	int err = bpf_map_update_elem(&exec_heap, &exit_index, e, BPF_ANY);
-	if (err)
-		return 0;
 
 	bpf_perf_event_output(ctx, &pb, BPF_F_CURRENT_CPU, e, sizeof(*e));
 

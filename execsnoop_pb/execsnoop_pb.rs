@@ -107,7 +107,7 @@ fn main() -> Result<()> {
 
             let fork_info = {
                 if event.flag & 0x1 == 0x1 {
-                    unsafe { format!("[<= {}]", bytes_to_string(event.comm2.as_ptr())) }
+                    unsafe { format!("[{}]", bytes_to_string(event.comm2.as_ptr())) }
                 } else {
                     String::new()
                 }
@@ -115,7 +115,7 @@ fn main() -> Result<()> {
 
             if show_timestamp {
                 print!(
-                    "{:^20.6}{:<7}{:<16}{:<8}{:<8}{:<8}[{}]{}{}",
+                    "{:<20.6}{:<7}{:<16}{:<8}{:<8}{:<8}[{}]{}{}",
                     timestamp_us as f64 / 1000000_f64,
                     "EXIT",
                     unsafe { bytes_to_string(event.comm.as_ptr()) },
@@ -128,7 +128,7 @@ fn main() -> Result<()> {
                 );
             } else {
                 print!(
-                    "{:^20}{:<7}{:<16}{:<8}{:<8}{:<8}[{}]{}{}",
+                    "{:<20}{:<7}{:<16}{:<8}{:<8}{:<8}[{}]{}{}",
                     now.format("%Y-%m-%d %H:%M:%S"),
                     "EXIT",
                     unsafe { bytes_to_string(event.comm.as_ptr()) },
@@ -148,7 +148,7 @@ fn main() -> Result<()> {
         } else if event.event_type == 0 {
             let fork_info = {
                 if event.flag & 0x1 == 0x1 {
-                    unsafe { format!("[<= {}]", bytes_to_string(event.comm2.as_ptr())) }
+                    unsafe { format!("[{}]", bytes_to_string(event.comm2.as_ptr())) }
                 } else {
                     String::new()
                 }
@@ -156,27 +156,27 @@ fn main() -> Result<()> {
 
             if show_timestamp {
                 print!(
-                    "{:^20.6}{:<7}{:<16}{:<8}{:<8}{:<8}[{}]{}",
+                    "{:<20.6}{:<7}{:<16}{:<8}{:<8}{:<8}{}: {}",
                     timestamp_us as f64 / 1000000_f64,
                     "EXEC",
                     unsafe { bytes_to_string(event.comm.as_ptr()) },
                     event.tid,
                     event.pid,
                     event.ppid,
+                    fork_info,
                     unsafe { bytes_to_string(event.filename.as_ptr()) },
-                    fork_info
                 );
             } else {
                 print!(
-                    "{:^20}{:<7}{:<16}{:<8}{:<8}{:<8}[{}]{}",
+                    "{:<20}{:<7}{:<16}{:<8}{:<8}{:<8}{}: {}",
                     now.format("%Y-%m-%d %H:%M:%S"),
                     "EXEC",
                     unsafe { bytes_to_string(event.comm.as_ptr()) },
                     event.tid,
                     event.pid,
                     event.ppid,
+                    fork_info,
                     unsafe { bytes_to_string(event.filename.as_ptr()) },
-                    fork_info
                 );
             }
 
@@ -188,7 +188,7 @@ fn main() -> Result<()> {
             if cli.fork_info {
                 if show_timestamp {
                     print!(
-                        "{:^20.6}{:<7}{:<16}{:<8}{:<8}{:<8}",
+                        "{:<20.6}{:<7}{:<16}{:<8}{:<8}{:<8}",
                         timestamp_us as f64 / 1000000_f64,
                         "FORK",
                         unsafe { bytes_to_string(event.comm.as_ptr()) },
@@ -198,7 +198,7 @@ fn main() -> Result<()> {
                     );
                 } else {
                     print!(
-                        "{:^20}{:<7}{:<16}{:<8}{:<8}{:<8}",
+                        "{:<20}{:<7}{:<16}{:<8}{:<8}{:<8}",
                         now.format("%Y-%m-%d %H:%M:%S"),
                         "FORK",
                         unsafe { bytes_to_string(event.comm.as_ptr()) },
@@ -225,7 +225,7 @@ fn main() -> Result<()> {
     skel.attach().with_context(|| "Faild to load bpf")?;
 
     println!(
-        "{:^20}{:<7}{:<16}{:<8}{:<8}{:<8}FILENAME/EXIT CODE/FORK INFO",
+        "{:<20}{:<7}{:<16}{:<8}{:<8}{:<8}FILENAME/EXIT CODE/FORK INFO",
         "TIME", "EVENT", "COMM", "TID","PID", "PPID"
     );
 
