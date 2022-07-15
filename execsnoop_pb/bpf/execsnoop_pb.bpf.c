@@ -10,6 +10,7 @@
 
 struct event {
 	int pid;
+	int tid;
 	int ppid;
 	unsigned exit_code;
 	unsigned long long duration_ns;
@@ -99,11 +100,13 @@ int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
 	unsigned fname_off;
 	struct event entry ={};
 	struct event *e = &entry;
-	pid_t pid;
+	pid_t pid, tid;
 	u64 ts;
+	u64 id = bpf_get_current_pid_tgid();
 
 	/* remember time exec() was executed for this PID */
-	pid = bpf_get_current_pid_tgid() >> 32;
+	pid = id >> 32;
+	tid = (u32) id;
 	ts = bpf_ktime_get_ns();
 	bpf_map_update_elem(&exec_start, &pid, &ts, BPF_ANY);
 
@@ -117,6 +120,7 @@ int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
 
 	e->event_type = 0;
 	e->pid = pid;
+	e->tid = tid;
 	e->flag = 0;
 	e->ppid = BPF_CORE_READ(task, real_parent, tgid);
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
@@ -124,8 +128,7 @@ int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
 	fname_off = ctx->__data_loc_filename & 0xFFFF;
 	bpf_probe_read_str(&e->filename, sizeof(e->filename), (void *)ctx + fname_off);
 
-
-	struct fork_event *fe = bpf_map_lookup_elem(&fork_events, &pid);
+	struct fork_event *fe = bpf_map_lookup_elem(&fork_events, &tid);
 	if (fe) {
 		__builtin_memcpy(&e->comm2, &fe->comm, sizeof(e->comm2));
 		e->flag |= 0x1;
@@ -159,7 +162,8 @@ int handle_fork(struct trace_event_raw_sched_process_fork *ctx)
 	bpf_map_update_elem(&fork_events, &child_pid, efork, BPF_ANY);
 
 	e->event_type = 2;
-	e->pid = child_pid;
+	e->tid = child_pid;
+	e->pid = bpf_get_current_pid_tgid() >> 32;
 	e->ppid = parent_pid;
 	e->flag = 0;
 	bpf_core_read_str(&e->comm, sizeof(e->comm), &ctx->child_comm);
@@ -232,10 +236,6 @@ int handle_exit(struct trace_event_raw_sched_process_template* ctx)
 	pid = id >> 32;
 	tid = (u32)id;
 
-	/* ignore thread exits */
-	if (pid != tid)
-		return 0;
-
 	/* if we recorded start of the process, calculate lifetime duration */
 	start_ts = bpf_map_lookup_elem(&exec_start, &pid);
 	if (start_ts)
@@ -255,6 +255,7 @@ int handle_exit(struct trace_event_raw_sched_process_template* ctx)
 	e->event_type = 1;
 	e->duration_ns = duration_ns;
 	e->pid = pid;
+	e->tid = tid;
 	e->flag = 0;
 	e->ppid = BPF_CORE_READ(task, real_parent, tgid);
 	e->exit_code = (BPF_CORE_READ(task, exit_code) >> 8) & 0xff;
@@ -270,7 +271,7 @@ int handle_exit(struct trace_event_raw_sched_process_template* ctx)
 		e->last_sig = -1; //-1 means no signal.
 	}
 
-	struct fork_event *fe = bpf_map_lookup_elem(&fork_events, &pid);
+	struct fork_event *fe = bpf_map_lookup_elem(&fork_events, &tid);
 	if (fe) {
 		__builtin_memcpy(&e->comm2, &fe->comm, sizeof(e->comm2));
 		bpf_map_delete_elem(&fork_events, &pid);
