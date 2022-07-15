@@ -156,16 +156,33 @@ fn main() -> Result<()> {
                 args.push_str(&arg0);
             }
 
+            let get_arg_str = |a: [i8; 128]| -> String {
+                let s = unsafe { bytes_to_string(a.as_ptr()) };
+                if s == "INVALID" {
+                    String::new()
+                } else {
+                    s
+                }
+            };
+
             args.push(' ');
-            args.push_str(unsafe { &bytes_to_string(event.arg1.as_ptr()) });
+            args.push_str(get_arg_str(event.arg1).as_str());
             args.push(' ');
-            args.push_str(unsafe { &bytes_to_string(event.arg2.as_ptr()) });
+            args.push_str(get_arg_str(event.arg2).as_str());
             args.push(' ');
-            args.push_str(unsafe { &bytes_to_string(event.arg3.as_ptr()) });
+            args.push_str(get_arg_str(event.arg3).as_str());
             args.push(' ');
-            args.push_str(unsafe { &bytes_to_string(event.arg4.as_ptr()) });
+            args.push_str(get_arg_str(event.arg4).as_str());
             args.push(' ');
-            args.push_str(unsafe { &bytes_to_string(event.arg5.as_ptr()) });
+            args.push_str(get_arg_str(event.arg5).as_str());
+            args.push(' ');
+            args.push_str(get_arg_str(event.arg6).as_str());
+            args.push(' ');
+            args.push_str(get_arg_str(event.arg7).as_str());
+            args.push(' ');
+            args.push_str(get_arg_str(event.arg8).as_str());
+            args.push(' ');
+            args.push_str(get_arg_str(event.arg9).as_str());
 
             let fork_info = {
                 if event.flag & 0x1 == 0x1 {
