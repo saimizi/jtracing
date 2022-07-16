@@ -45,6 +45,10 @@ struct Cli {
     ///Show fork() trace.
     #[clap(short = 'f', long)]
     fork_info: bool,
+
+    ///Show thread trace
+    #[clap(long)]
+    thread: bool,
 }
 
 type Event = execsnoop_pb_bss_types::event;
@@ -91,6 +95,9 @@ fn main() -> Result<()> {
             .split(' ').collect::<Vec<&str>>();
 
         if event.event_type == 1 {
+            if !cli.thread && event.tid != event.pid {
+                return;
+            }
             let signal_info = {
                 if event.last_sig != -1 {
                     format!(
@@ -146,6 +153,10 @@ fn main() -> Result<()> {
             }
             println!();
         } else if event.event_type == 0 {
+            if !cli.thread && event.tid != event.pid {
+                return;
+            }
+
             let arg0 = unsafe { bytes_to_string(event.arg0.as_ptr()) };
             let filename = unsafe { bytes_to_string(event.filename.as_ptr()) };
             let mut args = String::new();
@@ -256,7 +267,7 @@ fn main() -> Result<()> {
 
     let perbuf = PerfBufferBuilder::new(skel.maps().pb())
         .sample_cb(handle_event)
-        .pages(8) // 4k * 8 (pb map)
+        .pages(16) // 4k * 16
         .build()
         .with_context(|| "Failed to create perf buffer")?;
 
