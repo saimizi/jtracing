@@ -46,9 +46,13 @@ struct Cli {
     #[clap(short = 'f', long)]
     fork_info: bool,
 
-    ///Show thread trace
+    ///Show thread trace.
     #[clap(long)]
     thread: bool,
+
+    ///Do not show exit trace.
+    #[clap(long)]
+    no_exit: bool,
 }
 
 type Event = execsnoop_pb_bss_types::event;
@@ -95,6 +99,10 @@ fn main() -> Result<()> {
             .split(' ').collect::<Vec<&str>>();
 
         if event.event_type == 1 {
+            if cli.no_exit {
+                return;
+            }
+
             if !cli.thread && event.tid != event.pid {
                 return;
             }
