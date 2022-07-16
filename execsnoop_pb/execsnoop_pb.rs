@@ -165,43 +165,17 @@ fn main() -> Result<()> {
                 return;
             }
 
-            let arg0 = unsafe { bytes_to_string(event.arg0.as_ptr()) };
+            let args_raw =
+                String::from_utf8_lossy(&event.args[..event.args_size as usize]).to_string();
+            let mut args = args_raw.split('\0').collect::<Vec<&str>>();
+            let args_str = args[0..event.args_count as usize].join(" ");
             let filename = unsafe { bytes_to_string(event.filename.as_ptr()) };
-            let mut args = String::new();
 
-            if !filename.is_empty() {
-                args.push_str(&filename);
-            } else {
-                args.push_str(&arg0);
-            }
-
-            let get_arg_str = |a: [i8; 128]| -> String {
-                let s = unsafe { bytes_to_string(a.as_ptr()) };
-                if s == "INVALID" {
-                    String::new()
-                } else {
-                    s
+            if args.is_empty() {
+                if !filename.is_empty() {
+                    args.push(&filename);
                 }
-            };
-
-            args.push(' ');
-            args.push_str(get_arg_str(event.arg1).as_str());
-            args.push(' ');
-            args.push_str(get_arg_str(event.arg2).as_str());
-            args.push(' ');
-            args.push_str(get_arg_str(event.arg3).as_str());
-            args.push(' ');
-            args.push_str(get_arg_str(event.arg4).as_str());
-            args.push(' ');
-            args.push_str(get_arg_str(event.arg5).as_str());
-            args.push(' ');
-            args.push_str(get_arg_str(event.arg6).as_str());
-            args.push(' ');
-            args.push_str(get_arg_str(event.arg7).as_str());
-            args.push(' ');
-            args.push_str(get_arg_str(event.arg8).as_str());
-            args.push(' ');
-            args.push_str(get_arg_str(event.arg9).as_str());
+            }
 
             let fork_info = {
                 if event.flag & 0x1 == 0x1 {
@@ -221,7 +195,7 @@ fn main() -> Result<()> {
                     event.pid,
                     event.ppid,
                     fork_info,
-                    args
+                    args_str
                 );
             } else {
                 print!(
@@ -233,7 +207,7 @@ fn main() -> Result<()> {
                     event.pid,
                     event.ppid,
                     fork_info,
-                    args
+                    args_str
                 );
             }
 

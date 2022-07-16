@@ -8,9 +8,13 @@
 #define TASK_COMM_LEN 16
 #define MAX_FILENAME_LEN 128
 
-#define ARG_LEN 128
-#define MAX_ARGS_NUM 10
+#define ARGSIZE 128
+#define TOTAL_MAX_ARGS 60
+#define DEFAULT_MAXARGS 20
+#define FULL_MAX_ARGS_ARR (TOTAL_MAX_ARGS * ARGSIZE)
+#define LAST_ARG (FULL_MAX_ARGS_ARR - ARGSIZE)
 
+const volatile int max_args = DEFAULT_MAXARGS;
 
 struct event {
 	int pid;
@@ -43,18 +47,9 @@ struct event {
 	 */
 	u32 flag;
 
-	char arg0[ARG_LEN];
-	char arg1[ARG_LEN];
-	char arg2[ARG_LEN];
-	char arg3[ARG_LEN];
-	char arg4[ARG_LEN];
-	char arg5[ARG_LEN];
-	char arg6[ARG_LEN];
-	char arg7[ARG_LEN];
-	char arg8[ARG_LEN];
-	char arg9[ARG_LEN];
-
-
+	int args_count;
+	unsigned int args_size;
+	unsigned char args[FULL_MAX_ARGS_ARR];
 };
 
 struct kill_event {
@@ -119,17 +114,6 @@ struct trace_event_raw_sys_enter_execve{
 	char __data[0];
 };
 
-#define READ_ARG(N)									\
-{											\
-	char *p;									\
-	if (arg_process_fisnihed ||							\
-		bpf_probe_read_user(&p, sizeof(p), &ctx->argv[N]) < 0 ||		\
-		bpf_probe_read_user_str(&e->arg ## N, sizeof(e->arg ## N), p) < 0) {	\
-		e->arg ## N[0] = '\0';							\
-		arg_process_fisnihed = 1;						\
-	}										\
-}
-
 SEC("tp/syscalls/sys_enter_execve")
 int handle_exec(struct trace_event_raw_sys_enter_execve *ctx)
 {
@@ -173,17 +157,25 @@ int handle_exec(struct trace_event_raw_sys_enter_execve *ctx)
 		e->filename[0] = '\0';
 	}
 
-	int arg_process_fisnihed = 0;
-	READ_ARG(0);
-	READ_ARG(1);
-	READ_ARG(2);
-	READ_ARG(3);
-	READ_ARG(4);
-	READ_ARG(5);
-	READ_ARG(6);
-	READ_ARG(7);
-	READ_ARG(8);
-	READ_ARG(9);
+	int i;
+	e->args_size = 0;
+	e->args_count = 0;
+	#pragma unroll
+	for (i = 0; i < DEFAULT_MAXARGS; i++) {
+		ret = bpf_probe_read_user(&p, sizeof(p), &ctx->argv[i]);
+		if (ret < 0)
+			break;
+
+		if (e->args_size > LAST_ARG)
+			break;
+
+		ret = bpf_probe_read_user_str(&e->args[e->args_size], ARGSIZE, p);
+		if (ret <= 0) 
+			break;
+
+		e->args_count++;
+		e->args_size += ret;
+	}
 
 	struct fork_event *fe = bpf_map_lookup_elem(&fork_events, &tid);
 	if (fe) {
