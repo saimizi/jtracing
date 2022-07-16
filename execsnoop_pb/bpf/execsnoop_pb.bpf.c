@@ -122,9 +122,12 @@ struct trace_event_raw_sys_enter_execve{
 #define READ_ARG(N)									\
 {											\
 	char *p;									\
-	if (bpf_probe_read_user(&p, sizeof(p), &ctx->argv[N]) < 0 ||			\
-		bpf_probe_read_user_str(&e->arg ## N, sizeof(e->arg ## N), p) < 0)	\
+	if (arg_process_fisnihed ||							\
+		bpf_probe_read_user(&p, sizeof(p), &ctx->argv[N]) < 0 ||		\
+		bpf_probe_read_user_str(&e->arg ## N, sizeof(e->arg ## N), p) < 0) {	\
 		e->arg ## N[0] = '\0';							\
+		arg_process_fisnihed = 1;						\
+	}										\
 }
 
 SEC("tp/syscalls/sys_enter_execve")
@@ -170,6 +173,7 @@ int handle_exec(struct trace_event_raw_sys_enter_execve *ctx)
 		e->filename[0] = '\0';
 	}
 
+	int arg_process_fisnihed = 0;
 	READ_ARG(0);
 	READ_ARG(1);
 	READ_ARG(2);
