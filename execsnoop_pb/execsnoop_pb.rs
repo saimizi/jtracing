@@ -54,10 +54,6 @@ struct Cli {
     #[clap(short = 'e', long)]
     exit_event: bool,
 
-    ///show TID info.
-    #[clap(long)]
-    tid: bool,
-
     ///show PPID info.
     #[clap(long)]
     ppid: bool,
@@ -159,7 +155,7 @@ fn main() -> Result<()> {
             print_timestamp();
             print_mark("EXIT");
             print_comm();
-            if cli.tid {
+            if cli.thread {
                 print_id(event.tid);
             }
             print_id(event.pid);
@@ -206,7 +202,7 @@ fn main() -> Result<()> {
             print_timestamp();
             print_mark("EXEC");
             print_comm();
-            if cli.tid {
+            if cli.thread {
                 print_id(event.tid);
             }
             print_id(event.pid);
@@ -233,7 +229,7 @@ fn main() -> Result<()> {
             print_timestamp();
             print_mark("FORK");
             print_comm();
-            if cli.tid {
+            if cli.thread {
                 print_id(event.tid);
             }
             print_id(event.pid);
@@ -280,7 +276,7 @@ fn main() -> Result<()> {
     print_mark_str("EVENT");
     print_comm_str();
 
-    if cli.tid {
+    if cli.thread {
         print_id_str("TID");
     }
 
