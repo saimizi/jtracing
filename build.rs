@@ -69,7 +69,7 @@ fn main() {
             .generate(&skel)
             .expect("bpf compilation failed");
         println!("cargo:rerun-if-changed={}", &skle_c);
-
+        println!("cargo:rerun-if-changed={}/{}.rs", app, app);
 
         let skle_path_dst = format!("{}/{}.skel.rs", app_bpf_dir, app);
         let _ = remove_file(&skle_path_dst);
