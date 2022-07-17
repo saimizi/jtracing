@@ -39,20 +39,28 @@ struct Cli {
     verbose: usize,
 
     ///Use timestamp instead of date time.
-    #[clap(short = 't', long)]
+    #[clap(short = 'r', long)]
     timestamp: bool,
 
-    ///Show fork() trace.
+    ///Show fork trace.
     #[clap(short = 'f', long)]
-    fork_info: bool,
+    fork_event: bool,
 
     ///Show thread trace.
-    #[clap(long)]
+    #[clap(short = 't', long)]
     thread: bool,
 
-    ///Do not show exit trace.
+    ///Show exit trace.
+    #[clap(short = 'e', long)]
+    exit_event: bool,
+
+    ///show TID info.
     #[clap(long)]
-    no_exit: bool,
+    tid: bool,
+
+    ///show PPID info.
+    #[clap(long)]
+    ppid: bool,
 }
 
 type Event = execsnoop_pb_bss_types::event;
@@ -98,8 +106,28 @@ fn main() -> Result<()> {
         let signals = "HUP INT QUIT ILL TRAP ABRT BUS FPE KILL USR1 SEGV USR2 PIPE ALRM TERM STKFLT CHLD CONT STOP TSTP TTIN TTOU URG XCPU XFSZ VTALRM PROF WINCH POLL PWR SYS"
             .split(' ').collect::<Vec<&str>>();
 
+        let print_timestamp = || {
+            if show_timestamp {
+                print!("{:<10.6}", timestamp_us as f64 / 1000000_f64);
+            } else {
+                print!("{:<20}", now.format("%Y-%m-%d %H:%M:%S"));
+            }
+        };
+
+        let print_mark = |mark: &str| {
+            print!(" {:<7}", mark);
+        };
+
+        let print_comm = || {
+            print!(" {:<16}", unsafe { bytes_to_string(event.comm.as_ptr()) });
+        };
+
+        let print_id = |id: i32| {
+            print!(" {:<8}", id);
+        };
+
         if event.event_type == 1 {
-            if cli.no_exit {
+            if !cli.exit_event {
                 return;
             }
 
@@ -128,32 +156,22 @@ fn main() -> Result<()> {
                 }
             };
 
-            if show_timestamp {
-                print!(
-                    "{:<20.6}{:<7}{:<16}{:<8}{:<8}{:<8}[{}]{}{}",
-                    timestamp_us as f64 / 1000000_f64,
-                    "EXIT",
-                    unsafe { bytes_to_string(event.comm.as_ptr()) },
-                    event.tid,
-                    event.pid,
-                    event.ppid,
-                    event.exit_code,
-                    signal_info,
-                    fork_info,
-                );
-            } else {
-                print!(
-                    "{:<20}{:<7}{:<16}{:<8}{:<8}{:<8}[{}]{}{}",
-                    now.format("%Y-%m-%d %H:%M:%S"),
-                    "EXIT",
-                    unsafe { bytes_to_string(event.comm.as_ptr()) },
-                    event.tid,
-                    event.pid,
-                    event.ppid,
-                    event.exit_code,
-                    signal_info,
-                    fork_info
-                );
+            print_timestamp();
+            print_mark("EXIT");
+            print_comm();
+            if cli.tid {
+                print_id(event.tid);
+            }
+            print_id(event.pid);
+            if cli.ppid {
+                print_id(event.ppid);
+            }
+            print!(" [{}]", event.exit_code);
+            if !signal_info.is_empty() {
+                print!(" {}", signal_info);
+            }
+            if !fork_info.is_empty() {
+                print!(" {}", fork_info);
             }
 
             if event.duration_ns > 0 {
@@ -185,30 +203,22 @@ fn main() -> Result<()> {
                 }
             };
 
-            if show_timestamp {
-                print!(
-                    "{:<20.6}{:<7}{:<16}{:<8}{:<8}{:<8}{}: {}",
-                    timestamp_us as f64 / 1000000_f64,
-                    "EXEC",
-                    unsafe { bytes_to_string(event.comm.as_ptr()) },
-                    event.tid,
-                    event.pid,
-                    event.ppid,
-                    fork_info,
-                    args_str
-                );
-            } else {
-                print!(
-                    "{:<20}{:<7}{:<16}{:<8}{:<8}{:<8}{}: {}",
-                    now.format("%Y-%m-%d %H:%M:%S"),
-                    "EXEC",
-                    unsafe { bytes_to_string(event.comm.as_ptr()) },
-                    event.tid,
-                    event.pid,
-                    event.ppid,
-                    fork_info,
-                    args_str
-                );
+            print_timestamp();
+            print_mark("EXEC");
+            print_comm();
+            if cli.tid {
+                print_id(event.tid);
+            }
+            print_id(event.pid);
+            if cli.ppid {
+                print_id(event.ppid);
+            }
+            if !fork_info.is_empty() {
+                print!(" {}", fork_info);
+            }
+
+            if !args_str.is_empty() {
+                print!(" {}", args_str);
             }
 
             if event.duration_ns > 0 {
@@ -216,34 +226,25 @@ fn main() -> Result<()> {
             }
             println!();
         } else if event.event_type == 2 {
-            if cli.fork_info {
-                if show_timestamp {
-                    print!(
-                        "{:<20.6}{:<7}{:<16}{:<8}{:<8}{:<8}",
-                        timestamp_us as f64 / 1000000_f64,
-                        "FORK",
-                        unsafe { bytes_to_string(event.comm.as_ptr()) },
-                        event.tid,
-                        event.pid,
-                        event.ppid,
-                    );
-                } else {
-                    print!(
-                        "{:<20}{:<7}{:<16}{:<8}{:<8}{:<8}",
-                        now.format("%Y-%m-%d %H:%M:%S"),
-                        "FORK",
-                        unsafe { bytes_to_string(event.comm.as_ptr()) },
-                        event.tid,
-                        event.pid,
-                        event.ppid,
-                    );
-                }
+            if !cli.fork_event {
+                return;
+            }
 
-                if event.duration_ns > 0 {
-                    print!(" ({}ms)", event.duration_ns / 1000000_u64);
-                }
-                println!();
-            };
+            print_timestamp();
+            print_mark("FORK");
+            print_comm();
+            if cli.tid {
+                print_id(event.tid);
+            }
+            print_id(event.pid);
+            if cli.ppid {
+                print_id(event.ppid);
+            }
+
+            if event.duration_ns > 0 {
+                print!(" ({}ms)", event.duration_ns / 1000000_u64);
+            }
+            println!();
         };
     };
 
@@ -255,10 +256,41 @@ fn main() -> Result<()> {
 
     skel.attach().with_context(|| "Faild to load bpf")?;
 
-    println!(
-        "{:<20}{:<7}{:<16}{:<8}{:<8}{:<8}FILENAME/EXIT CODE/FORK INFO",
-        "TIME", "EVENT", "COMM", "TID", "PID", "PPID"
-    );
+    let print_timestamp_str = || {
+        if cli.timestamp {
+            print!("{:<10}", "TIME");
+        } else {
+            print!("{:<20}", "TIME");
+        }
+    };
+
+    let print_mark_str = |mark: &str| {
+        print!(" {:<7}", mark);
+    };
+
+    let print_comm_str = || {
+        print!(" {:<16}", "COMM");
+    };
+
+    let print_id_str = |id: &str| {
+        print!(" {:<8}", id);
+    };
+
+    print_timestamp_str();
+    print_mark_str("EVENT");
+    print_comm_str();
+
+    if cli.tid {
+        print_id_str("TID");
+    }
+
+    print_id_str("PID");
+
+    if cli.ppid {
+        print_id_str("PPID");
+    }
+
+    println!(" INFO");
 
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
