@@ -63,10 +63,11 @@ fn main() {
 
         jinfo!("clang_args: {}", clang_args);
 
-        SkeletonBuilder::new(&skle_c)
+        SkeletonBuilder::new()
+            .source(&skle_c)
             .debug(true)
             .clang_args(&clang_args)
-            .generate(&skel)
+            .build_and_generate(&skel)
             .expect("bpf compilation failed");
         println!("cargo:rerun-if-changed={}", &skle_c);
         println!("cargo:rerun-if-changed={}/{}.rs", app, app);
