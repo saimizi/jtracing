@@ -419,7 +419,18 @@ fn main() -> Result<()> {
 
     let skel_builder = FunccountSkelBuilder::default();
 
-    set_print(Some((PrintLevel::Debug, print_to_log)));
+    // BUG!
+    // set_print() will clear errno, which make libbpf-rs fail to detect the failure of
+    // attach() and create invalid link whose ptr is NULL.
+    // This will cause segmentation fault when doing detach() below.
+    //
+    // See " Preserve errno when calling libbpf_print(). #536 "
+    // (https://github.com/libbpf/libbpf/pull/536)
+    if cli.verbose >= 2 {
+        set_print(Some((PrintLevel::Debug, print_to_log)));
+    } else {
+        set_print(None);
+    }
 
     let mut open_skel = skel_builder.open().with_context(|| "Failed to open bpf.")?;
 
@@ -461,7 +472,7 @@ fn main() -> Result<()> {
 
     let mut links = vec![];
     let mut exec_map_hash = HashMap::<u32, ExecMap>::new();
-    let mut runtime_s;
+    let runtime_s;
     {
         let exec_map_hash_ref = &mut exec_map_hash;
 
@@ -544,13 +555,21 @@ fn main() -> Result<()> {
 
                     println!("Attaching {} Tracepoint.", tps.len());
                     for (tp_category, tp_name) in tps.iter() {
-                        let link = skel
+                        match skel
                             .progs_mut()
                             .stacktrace_tp()
                             .attach_tracepoint(tp_category, tp_name)
-                            .with_context(|| format!("Failed to attach {}.", arg))?;
-
-                        links.push(link);
+                        {
+                            Ok(link) => links.push(link),
+                            Err(e) => {
+                                log::warn!(
+                                    "Failed to attach {}/{}: {}, skiped",
+                                    tp_category,
+                                    tp_name,
+                                    e
+                                )
+                            }
+                        }
                     }
                     processed = true;
                 }
@@ -595,7 +614,7 @@ fn main() -> Result<()> {
                         println!("Attaching {} Uprobes.", symbols.len());
                     }
 
-                    for (_symbol, offset) in symbols {
+                    for (symbol, offset) in symbols {
                         /*
                          * Parameter
                          *  pid > 0: target process to trace
@@ -603,13 +622,22 @@ fn main() -> Result<()> {
                          *  pid == -1 : trace all processes
                          * See bpf_program__attach_uprobe()
                          */
-                        let link = skel
-                            .progs_mut()
-                            .stacktrace_ub()
-                            .attach_uprobe(false, pid, file, offset as usize)
-                            .with_context(|| format!("Failed to attach {}.", arg))?;
-
-                        links.push(link);
+                        match skel.progs_mut().stacktrace_ub().attach_uprobe(
+                            false,
+                            pid,
+                            file,
+                            offset as usize,
+                        ) {
+                            Ok(link) => links.push(link),
+                            Err(e) => {
+                                log::warn!(
+                                    "Failed to attach {}({:x}): {}, skiped",
+                                    symbol,
+                                    offset,
+                                    e
+                                )
+                            }
+                        }
                     }
                 }
                 processed = true;
@@ -650,13 +678,14 @@ fn main() -> Result<()> {
                     }
 
                     for func_name in func_names {
-                        let link = skel
+                        match skel
                             .progs_mut()
                             .stacktrace_kb()
                             .attach_kprobe(false, func_name)
-                            .with_context(|| format!("Failed to attach {}.", arg))?;
-
-                        links.push(link);
+                        {
+                            Ok(link) => links.push(link),
+                            Err(e) => log::warn!("Failed to attach {}: {}, skiped.", func_name, e),
+                        }
                     }
                     processed = true;
                 }
@@ -664,6 +693,10 @@ fn main() -> Result<()> {
             if processed {
                 continue;
             }
+        }
+
+        if links.is_empty() {
+            return Err(Error::msg("No traceable symbols."));
         }
 
         let start = Instant::now();
@@ -675,9 +708,13 @@ fn main() -> Result<()> {
         })?;
 
         if cli.duration > 0 {
-            println!("Tracing for {} seconds, Type Ctrl-C to stop.", cli.duration);
+            println!(
+                "Tracing {} symboles for {} seconds, Type Ctrl-C to stop.",
+                links.len(),
+                cli.duration
+            );
         } else {
-            println!("Tracing... Type Ctrl-C to stop.");
+            println!("Tracing {} symboles... Type Ctrl-C to stop.", links.len());
         }
 
         let mut timeout = if cli.duration > 0 {
@@ -699,13 +736,24 @@ fn main() -> Result<()> {
             }
         }
 
+        // BUG
+        // see comment of calling set_print above.
+        if cli.verbose < 2 {
+            // libbpf uses BPF_LINK_DETACH to detach, but this API is supported from linux-5.18
+            // detach will fail in old kernel.
+            for link in links {
+                match link.detach() {
+                    Ok(()) => {}
+                    Err(_e) => {}
+                }
+            }
+        }
+
+        // Time here may be incorrect when detach() failed.
         runtime_s = start.elapsed().as_secs();
     }
 
-    let start2 = Instant::now();
-
     println!("Tracing finished, Processing data...");
-
     let mut symanalyzer = SymbolAnalyzer::new(None)?;
     process_events(
         &cli,
@@ -715,7 +763,6 @@ fn main() -> Result<()> {
         &mut exec_map_hash,
     )?;
 
-    runtime_s += start2.elapsed().as_secs();
     print_result(&cli, &mut result, runtime_s)?;
     Ok(())
 }
