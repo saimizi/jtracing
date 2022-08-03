@@ -73,7 +73,7 @@ struct Cli {
     #[clap(short = 'e')]
     exec: bool,
 
-    ///Trace function execution.
+    ///Only show first <COUNT> results.
     #[clap(short = 'c', long)]
     count: Option<u32>,
 
