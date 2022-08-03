@@ -22,9 +22,9 @@ use execsnoop_pb::*;
 
 fn print_to_log(level: PrintLevel, msg: String) {
     match level {
-        PrintLevel::Debug => log::debug!("{}", msg),
-        PrintLevel::Info => log::info!("{}", msg),
-        PrintLevel::Warn => log::warn!("{}", msg),
+        PrintLevel::Debug => log::debug!("{}", msg.trim_end_matches('\n')),
+        PrintLevel::Info => log::info!("{}", msg.trim_end_matches('\n')),
+        PrintLevel::Warn => log::warn!("{}", msg.trim_end_matches('\n')),
     }
 }
 
