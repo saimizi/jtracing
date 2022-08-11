@@ -21,6 +21,10 @@ name = "execsnoop_pb"
 path = "execsnoop_pb/execsnoop_pb.rs"
 
 [[bin]]
+name = "execsnoop_rb"
+path = "execsnoop_rb/execsnoop_rb.rs"
+
+[[bin]]
 name = "funccount"
 path = "funccount/funccount.rs"
 

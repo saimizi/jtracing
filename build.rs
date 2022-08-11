@@ -20,7 +20,7 @@ fn main() {
         .log_time(false)
         .build();
 
-    let applications = vec!["execsnoop_pb", "funccount", "eglswapbuffers"];
+    let applications = vec!["execsnoop_pb", "execsnoop_rb", "funccount", "eglswapbuffers"];
     let out_dir = env::var("OUT_DIR").unwrap();
 
     jinfo!("{}", out_dir);
