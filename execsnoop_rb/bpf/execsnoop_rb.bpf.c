@@ -93,14 +93,6 @@ struct {
 	__uint(max_entries, 512 * 1024);
 } rb SEC(".maps");
 
-struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 3);
-	__type(key, int);
-	__type(value, struct event);
-} exec_heap SEC(".maps");
-
-
 const volatile unsigned long long min_duration_ns = 0;
 
 struct trace_event_raw_sys_enter_execve{
@@ -121,8 +113,7 @@ int handle_exec(struct trace_event_raw_sys_enter_execve *ctx)
 	u64 id = bpf_get_current_pid_tgid();
 	long ret;
 
-	int exec_index = 0;
-	struct event *e = bpf_map_lookup_elem(&exec_heap, &exec_index);
+	struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
 	if (!e)
 		return 0;
 
@@ -134,8 +125,10 @@ int handle_exec(struct trace_event_raw_sys_enter_execve *ctx)
 
 
 	/* don't emit exec events when minimum duration is specified */
-	if (min_duration_ns)
+	if (min_duration_ns) {
+		bpf_ringbuf_discard(e, 0);
 		return 0;
+	}
 
 	/* fill out the sample with data */
 	task = (struct task_struct *)bpf_get_current_task();
@@ -181,8 +174,7 @@ int handle_exec(struct trace_event_raw_sys_enter_execve *ctx)
 		e->flag |= 0x1;
 	} 
 
-
-	bpf_ringbuf_output(&rb, e, sizeof(*e), 0);
+	bpf_ringbuf_submit(e, 0);
 
 	return 0;
 }
@@ -195,8 +187,7 @@ int handle_fork(struct trace_event_raw_sched_process_fork *ctx)
 	pid_t child_pid; 
 	pid_t parent_pid;
 
-	int fork_index = 2;
-	struct event *e = bpf_map_lookup_elem(&exec_heap, &fork_index);
+	struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
 	if (!e)
 		return 0;
 
@@ -215,7 +206,7 @@ int handle_fork(struct trace_event_raw_sched_process_fork *ctx)
 	bpf_probe_read_str(&e->comm, sizeof(e->comm), &ctx->child_comm);
 	
 
-	bpf_ringbuf_output(&rb, e, sizeof(*e), 0);
+	bpf_ringbuf_submit(e, 0);
 	return 0;
 }
 
@@ -273,8 +264,7 @@ int handle_exit(struct trace_event_raw_sched_process_template* ctx)
 	pid_t pid, tid;
 	u64 id, ts, *start_ts, duration_ns = 0;
 
-	int exit_index = 1;
-	struct event *e = bpf_map_lookup_elem(&exec_heap, &exit_index);
+	struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
 	if (!e)
 		return 0;
 	
@@ -287,14 +277,18 @@ int handle_exit(struct trace_event_raw_sched_process_template* ctx)
 	start_ts = bpf_map_lookup_elem(&exec_start, &pid);
 	if (start_ts)
 		duration_ns = bpf_ktime_get_ns() - *start_ts;
-	else if (min_duration_ns)
+	else if (min_duration_ns) {
+		bpf_ringbuf_discard(e, 0);
 		return 0;
+	}
 
 	bpf_map_delete_elem(&exec_start, &pid);
 
 	/* if process didn't live long enough, return early */
-	if (min_duration_ns && duration_ns < min_duration_ns)
+	if (min_duration_ns && duration_ns < min_duration_ns) {
+		bpf_ringbuf_discard(e, 0);
 		return 0;
+	}
 
 	/* fill out the sample with data */
 	task = (struct task_struct *)bpf_get_current_task();
@@ -325,7 +319,7 @@ int handle_exit(struct trace_event_raw_sched_process_template* ctx)
 		e->flag |= 0x1;
 	} 
 
-	bpf_ringbuf_output(&rb, e, sizeof(*e), 0);
+	bpf_ringbuf_submit(e, 0);
 
 	return 0;
 }
