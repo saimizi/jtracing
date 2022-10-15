@@ -40,7 +40,7 @@ clap = { version="3.1", features = ["derive"] }
 regex = "1"
 rand = "0.8"
 tokio = {version = "1", features = ["full"]}
-libbpf-rs = "0.18"
+libbpf-rs = "0.19"
 libc = "0.2"
 plain = "0.2"
 ctrlc = "3.2"
@@ -55,9 +55,6 @@ byteorder = "1.4"
 strip = true
 
 [build-dependencies]
-libbpf-cargo = "0.12"
+libbpf-cargo = "0.13"
 jlogger = "0.1"
 log = "0.4"
-
-[patch.crates-io]
-libbpf-cargo = {git = 'https://github.com/libbpf/libbpf-rs.git', rev ="04e7323a57997e11c65fb17e4d1eafb6166c8d2a"}
