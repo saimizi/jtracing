@@ -418,19 +418,7 @@ fn main() -> Result<()> {
     bump_memlock_rlimit();
 
     let skel_builder = FunccountSkelBuilder::default();
-
-    // BUG!
-    // set_print() will clear errno, which make libbpf-rs fail to detect the failure of
-    // attach() and create invalid link whose ptr is NULL.
-    // This will cause segmentation fault when doing detach() below.
-    //
-    // See " Preserve errno when calling libbpf_print(). #536 "
-    // (https://github.com/libbpf/libbpf/pull/536)
-    if cli.verbose >= 2 {
-        set_print(Some((PrintLevel::Debug, print_to_log)));
-    } else {
-        set_print(None);
-    }
+    set_print(Some((PrintLevel::Debug, print_to_log)));
 
     let mut open_skel = skel_builder.open().with_context(|| "Failed to open bpf.")?;
 
@@ -736,16 +724,12 @@ fn main() -> Result<()> {
             }
         }
 
-        // BUG
-        // see comment of calling set_print above.
-        if cli.verbose < 2 {
-            // libbpf uses BPF_LINK_DETACH to detach, but this API is supported from linux-5.18
-            // detach will fail in old kernel.
-            for link in links {
-                match link.detach() {
-                    Ok(()) => {}
-                    Err(_e) => {}
-                }
+        // libbpf uses BPF_LINK_DETACH to detach, but this API is supported from linux-5.18
+        // detach will fail in old kernel.
+        for link in links {
+            match link.detach() {
+                Ok(()) => {}
+                Err(_e) => {}
             }
         }
 
