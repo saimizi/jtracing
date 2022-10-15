@@ -1,3 +1,5 @@
+//cspell:word libbpf tracelib eglswapbuffers memlock rlimit skel libpath
+//cspell:word tgid uprobe
 #[allow(unused)]
 use {
     anyhow::{Context, Error, Result},
@@ -54,7 +56,7 @@ struct Cli {
     #[clap(short = 'g', long)]
     glx: bool,
 
-    ///Only trace porcess with specified PID.
+    ///Only trace process with specified PID.
     #[clap(short = 'p', long)]
     pid: Option<i32>,
 

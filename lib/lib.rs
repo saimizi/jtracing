@@ -1,3 +1,5 @@
+//cspell:word kprobe symbolanalyzer tracelog cfile fopen cbuf fwrite libc debugfs memlock rlimit
+//cspell:word rlim setrlimit
 #[allow(unused)]
 use {
     anyhow::{Context, Error, Result},

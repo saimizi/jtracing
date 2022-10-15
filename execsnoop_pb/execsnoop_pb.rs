@@ -1,3 +1,6 @@
+//cspell:word  libbpf tracelib execsnoop skel memlock rlimit PPID ppid rodata chrono
+//cspell:word nanos TSTP TTOU XCPU XFSZ VTALRM SEGV ALRM STKFLT CHLD TTIN ABRT
+//cspell:word  perfbuf
 #[allow(unused)]
 use {
     anyhow::{Context, Error, Result},
@@ -88,7 +91,7 @@ fn main() -> Result<()> {
 
     open_skel.rodata().min_duration_ns = cli.duration * 1000000_u64;
 
-    let mut skel = open_skel.load().with_context(|| "Faild to load bpf")?;
+    let mut skel = open_skel.load().with_context(|| "Failed to load bpf")?;
 
     let start = chrono::Local::now();
     let show_timestamp = cli.timestamp;
@@ -244,13 +247,13 @@ fn main() -> Result<()> {
         };
     };
 
-    let perbuf = PerfBufferBuilder::new(skel.maps().pb())
+    let perfbuf = PerfBufferBuilder::new(skel.maps().pb())
         .sample_cb(handle_event)
         .pages(16) // 4k * 16
         .build()
         .with_context(|| "Failed to create perf buffer")?;
 
-    skel.attach().with_context(|| "Faild to load bpf")?;
+    skel.attach().with_context(|| "Failed to load bpf")?;
 
     let print_timestamp_str = || {
         if cli.timestamp {
@@ -296,8 +299,8 @@ fn main() -> Result<()> {
     })?;
 
     while running.load(Ordering::SeqCst) {
-        // ctrl-c will fail perbuf.poll()
-        let _ = perbuf.poll(std::time::Duration::from_millis(100));
+        // ctrl-c will fail perfbuf.poll()
+        let _ = perfbuf.poll(std::time::Duration::from_millis(100));
     }
 
     Ok(())

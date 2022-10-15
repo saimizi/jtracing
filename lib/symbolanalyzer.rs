@@ -1,3 +1,6 @@
+//cspell:word demangle ktype kallsyms mapf libipcon kmap ksymbol usymbol fpathbuf
+//cspell:word canonicalize fpath memmap Mmap debuglink syms dynsyms
+//cspell:word symbolanalyzer testfiles kernelmap
 #[allow(unused)]
 use {
     anyhow::{Error, Result},
@@ -104,8 +107,8 @@ pub struct KernelMap {
 }
 
 impl KernelMap {
-    pub fn new(symbolfile: Option<&str>) -> Result<Self> {
-        let f = if let Some(sf) = symbolfile {
+    pub fn new(symbol_file: Option<&str>) -> Result<Self> {
+        let f = if let Some(sf) = symbol_file {
             fs::OpenOptions::new().read(true).open(sf)?
         } else {
             fs::OpenOptions::new().read(true).open("/proc/kallsyms")?
@@ -219,7 +222,7 @@ impl KernelMap {
         }
     }
 
-    pub fn symobol_vec(&self) -> Vec<&KernelSymbolEntry> {
+    pub fn symbol_vec(&self) -> Vec<&KernelSymbolEntry> {
         let mut result = vec![];
 
         self.kallsyms.iter().for_each(|entry| result.push(entry));
@@ -295,7 +298,7 @@ impl ExecMap {
         }
 
         return Err(Error::msg(format!(
-            "Invalid addr {:x} for pid {}. Avaliable range: {}",
+            "Invalid addr {:x} for pid {}. Available range: {}",
             addr, self.pid, keys
         )));
     }
@@ -330,9 +333,9 @@ pub fn addr_str_to_u64(addr_str: &str) -> Result<u64> {
 }
 
 impl SymbolAnalyzer {
-    pub fn new(symbolfile: Option<&str>) -> Result<Self> {
+    pub fn new(symbol_file: Option<&str>) -> Result<Self> {
         Ok(SymbolAnalyzer {
-            kmap: KernelMap::new(symbolfile)?,
+            kmap: KernelMap::new(symbol_file)?,
             map: HashMap::new(),
         })
     }
@@ -346,7 +349,7 @@ impl SymbolAnalyzer {
         self.kmap.symbol(addr)
     }
 
-    /// Return (addr, symbole name, file name).
+    /// Return (addr, symbol name, file name).
     pub fn usymbol(&mut self, pid: u32, addr: u64) -> Result<(u64, String, String)> {
         let em = self.map.entry(pid).or_insert(ExecMap::new(pid)?);
         em.symbol(addr)
@@ -485,7 +488,7 @@ impl ElfFile {
         self.name.as_str()
     }
 
-    pub fn symobol_vec(&self) -> Vec<&SymbolEntry> {
+    pub fn symbol_vec(&self) -> Vec<&SymbolEntry> {
         let mut result = vec![];
 
         self.sym_addr.iter().for_each(|entry| result.push(entry.1));
@@ -522,6 +525,6 @@ mod tests {
         use crate::symbolanalyzer::KernelMap;
         let km = KernelMap::new(Some("testfiles/test_symbol")).unwrap();
 
-        assert_eq!(km.symobol_vec().len(), 205982);
+        assert_eq!(km.symbol_vec().len(), 205982);
     }
 }

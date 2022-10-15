@@ -1,3 +1,4 @@
+//cspell:word Kprobe fname narg kprobes
 #[allow(unused)]
 use {
     crate::{writeln_proc, writeln_str_file},

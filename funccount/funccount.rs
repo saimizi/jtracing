@@ -1,3 +1,7 @@
+//cspell:word byteorder libbpf tracelib funccount memlock rlimit skel exectrace kstack ustack
+//cspell:word symanalyzer exectime pname ksymbol usymbol stackcnt stackmap symname
+//cspell:word perfbuf tracepoints Tracepoint uprobe Uprobes ktype kprobe Kprobes
+
 #[allow(unused)]
 use {
     jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
@@ -61,11 +65,11 @@ struct Cli {
     #[clap(short = 'a')]
     addr: bool,
 
-    ///Show file informaton.
+    ///Show file information.
     #[clap(short = 'f')]
     file: bool,
 
-    ///Show stack informaton.
+    ///Show stack information.
     #[clap(short = 's')]
     stack: bool,
 
@@ -81,7 +85,7 @@ struct Cli {
     #[clap(short = 'r')]
     relative: bool,
 
-    ///Only trace porcess with specified PID.
+    ///Only trace process with specified PID.
     #[clap(short = 'p', long)]
     pid: Option<i32>,
 
@@ -517,7 +521,7 @@ fn main() -> Result<()> {
         }
 
         if sym_to_trace.is_empty() {
-            return Err(Error::msg("No symbole file found."));
+            return Err(Error::msg("No symbol file found."));
         }
 
         for arg in sym_to_trace {
@@ -551,7 +555,7 @@ fn main() -> Result<()> {
                             Ok(link) => links.push(link),
                             Err(e) => {
                                 log::warn!(
-                                    "Failed to attach {}/{}: {}, skiped",
+                                    "Failed to attach {}/{}: {}, skipped",
                                     tp_category,
                                     tp_name,
                                     e
@@ -582,7 +586,7 @@ fn main() -> Result<()> {
                     let re = Regex::new(&pattern)?;
                     let mut symbols = vec![];
 
-                    for &sy in elf.symobol_vec().iter() {
+                    for &sy in elf.symbol_vec().iter() {
                         if re.is_match(sy.name()) {
                             symbols.push((sy.name(), sy.start()));
                         }
@@ -619,7 +623,7 @@ fn main() -> Result<()> {
                             Ok(link) => links.push(link),
                             Err(e) => {
                                 log::warn!(
-                                    "Failed to attach {}({:x}): {}, skiped",
+                                    "Failed to attach {}({:x}): {}, skipped",
                                     symbol,
                                     offset,
                                     e
@@ -642,7 +646,7 @@ fn main() -> Result<()> {
                     let pattern = format!("^{}$", &g[2]);
                     let re = Regex::new(&pattern)?;
 
-                    for &sy in km.symobol_vec().iter() {
+                    for &sy in km.symbol_vec().iter() {
                         if sy.ktype() != NmSymbolType::Text {
                             continue;
                         }
@@ -672,7 +676,7 @@ fn main() -> Result<()> {
                             .attach_kprobe(false, func_name)
                         {
                             Ok(link) => links.push(link),
-                            Err(e) => log::warn!("Failed to attach {}: {}, skiped.", func_name, e),
+                            Err(e) => log::warn!("Failed to attach {}: {}, skipped.", func_name, e),
                         }
                     }
                     processed = true;
@@ -697,12 +701,12 @@ fn main() -> Result<()> {
 
         if cli.duration > 0 {
             println!(
-                "Tracing {} symboles for {} seconds, Type Ctrl-C to stop.",
+                "Tracing {} symbols for {} seconds, Type Ctrl-C to stop.",
                 links.len(),
                 cli.duration
             );
         } else {
-            println!("Tracing {} symboles... Type Ctrl-C to stop.", links.len());
+            println!("Tracing {} symbols... Type Ctrl-C to stop.", links.len());
         }
 
         let mut timeout = if cli.duration > 0 {

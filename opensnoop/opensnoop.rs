@@ -1,3 +1,4 @@
+//cspell:word oneshot tracelib Kprobe ctrc fname tlog tpid execve
 #[allow(unused)]
 use {
     anyhow::{Context, Error, Result},
@@ -76,11 +77,11 @@ async fn async_main() -> Result<()> {
     }
 
     if let Some(p) = cli.pid {
-        info!("Traing PID {} ...", p);
+        info!("Tracing PID {} ...", p);
     }
 
     if let Some(ref c) = cli.command {
-        info!("Traing command {} ...", c);
+        info!("Tracing command {} ...", c);
     }
 
     let current_tracer = format!("{}/current_tracer", trace_top_dir().await?);
@@ -119,23 +120,23 @@ async fn async_main() -> Result<()> {
                                     let mut fname = String::new();
                                     let mut flag = String::new();
                                     let mut mode = String::new();
-                                    let mut itor = msg.split(' ').collect::<Vec<&str>>().into_iter();
-                                    itor.next();
-                                    itor.next();
+                                    let mut iter = msg.split(' ').collect::<Vec<&str>>().into_iter();
+                                    iter.next();
+                                    iter.next();
 
-                                    if let Some(s) = itor.next() {
+                                    if let Some(s) = iter.next() {
                                         fname.push_str(s);
                                     } else {
                                         break;
                                     }
 
-                                    if let Some(s) = itor.next() {
+                                    if let Some(s) = iter.next() {
                                         flag.push_str(s);
                                     } else {
                                         break;
                                     }
 
-                                    if let Some(s) = itor.next() {
+                                    if let Some(s) = iter.next() {
                                         mode.push_str(s);
                                     } else {
                                         break;

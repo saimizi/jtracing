@@ -1,3 +1,6 @@
+//cspell:word libbpf tracelib skel execsnoop  memlock rlimit ppid PPID rodata chrono
+//cspell:word nanos TSTP TTOU XCPU XFSZ VTALRM SEGV ALRM STKFLT CHLD TTIN ABRT rbuilder
+//cspell:word ringbuf
 #[allow(unused)]
 use {
     anyhow::{Context, Error, Result},
@@ -88,7 +91,7 @@ fn main() -> Result<()> {
 
     open_skel.rodata().min_duration_ns = cli.duration * 1000000_u64;
 
-    let mut skel = open_skel.load().with_context(|| "Faild to load bpf")?;
+    let mut skel = open_skel.load().with_context(|| "Failed to load bpf")?;
 
     let start = chrono::Local::now();
     let show_timestamp = cli.timestamp;
@@ -252,7 +255,7 @@ fn main() -> Result<()> {
         .build()
         .with_context(|| "Failed to create ring buffer")?;
 
-    skel.attach().with_context(|| "Faild to load bpf")?;
+    skel.attach().with_context(|| "Failed to load bpf")?;
 
     let print_timestamp_str = || {
         if cli.timestamp {
@@ -298,7 +301,6 @@ fn main() -> Result<()> {
     })?;
 
     while running.load(Ordering::SeqCst) {
-        // ctrl-c will fail perbuf.poll()
         let _ = ringbuf.poll(std::time::Duration::from_millis(100));
     }
 
