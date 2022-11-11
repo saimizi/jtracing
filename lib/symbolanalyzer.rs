@@ -1,11 +1,14 @@
+use std::fmt::Display;
+
 //cspell:word demangle ktype kallsyms mapf libipcon kmap ksymbol usymbol fpathbuf
 //cspell:word canonicalize fpath memmap Mmap debuglink syms dynsyms
 //cspell:word symbolanalyzer testfiles kernelmap
 #[allow(unused)]
 use {
-    anyhow::{Error, Result},
+    error_stack::{IntoReport, Result, ResultExt},
     jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
     log::{debug, error, info, warn, LevelFilter},
+    std::error::Error,
 };
 
 use {
@@ -18,6 +21,35 @@ use {
         path::Path,
     },
 };
+
+#[derive(Debug)]
+pub enum SymbolAnalyzerError {
+    InvalidAddress,
+    InvalidSymbolFile,
+    InvalidElfFile,
+    NoKallsymsFile,
+    SymbolNotFound,
+    FailedReadMap,
+    Unexpected,
+}
+
+impl Display for SymbolAnalyzerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let error_str = match self {
+            SymbolAnalyzerError::InvalidAddress => "Invalid address",
+            SymbolAnalyzerError::SymbolNotFound => "Symbol not found",
+            SymbolAnalyzerError::InvalidSymbolFile => "Invalid symbol file",
+            SymbolAnalyzerError::InvalidElfFile => "Invalid elf file",
+            SymbolAnalyzerError::NoKallsymsFile => "No /proc/kallsyms found",
+            SymbolAnalyzerError::FailedReadMap => "Failed to read /proc/<PID>/maps",
+            SymbolAnalyzerError::Unexpected => "Unexpected error",
+        };
+
+        write!(f, "{}", error_str)
+    }
+}
+
+impl Error for SymbolAnalyzerError {}
 
 pub fn cpp_demangle_sym(sym: &str) -> String {
     if let Ok(sym) = cpp_demangle::Symbol::new(sym.as_bytes()) {
@@ -107,11 +139,20 @@ pub struct KernelMap {
 }
 
 impl KernelMap {
-    pub fn new(symbol_file: Option<&str>) -> Result<Self> {
+    pub fn new(symbol_file: Option<&str>) -> Result<Self, SymbolAnalyzerError> {
         let f = if let Some(sf) = symbol_file {
-            fs::OpenOptions::new().read(true).open(sf)?
+            fs::OpenOptions::new()
+                .read(true)
+                .open(sf)
+                .into_report()
+                .change_context(SymbolAnalyzerError::InvalidSymbolFile)
+                .attach_printable(format!("Invalid symbol file: {}", sf))?
         } else {
-            fs::OpenOptions::new().read(true).open("/proc/kallsyms")?
+            fs::OpenOptions::new()
+                .read(true)
+                .open("/proc/kallsyms")
+                .into_report()
+                .change_context(SymbolAnalyzerError::NoKallsymsFile)?
         };
 
         let mut reader = BufReader::new(f);
@@ -129,13 +170,17 @@ impl KernelMap {
 
             let addr_str = entries
                 .next()
-                .ok_or_else(|| Error::msg("Invalid data"))?
+                .ok_or_else(|| SymbolAnalyzerError::InvalidSymbolFile)
+                .into_report()
+                .attach_printable(format!("No address found in line: `{}`", line))?
                 .trim();
             let addr = addr_str_to_u64(addr_str)?;
 
             let t = entries
                 .next()
-                .ok_or_else(|| Error::msg("Invalid data"))?
+                .ok_or_else(|| SymbolAnalyzerError::InvalidSymbolFile)
+                .into_report()
+                .attach_printable(format!("No symbol type found in line: `{}`", line))?
                 .trim();
             let ktype = match t {
                 "A" | "a" => NmSymbolType::Absolute,
@@ -157,13 +202,19 @@ impl KernelMap {
                 "W" | "w" => NmSymbolType::WeakObjectW,
                 "-" => NmSymbolType::StabsSymbol,
                 "?" => NmSymbolType::Unknown,
-                _ => return Err(Error::msg("Invalid data")),
+                _ => {
+                    return Err(SymbolAnalyzerError::InvalidSymbolFile)
+                        .into_report()
+                        .attach_printable(format!("Invalid type {}", t))
+                }
             };
 
             let name = String::from(
                 entries
                     .next()
-                    .ok_or_else(|| Error::msg("Invalid data"))?
+                    .ok_or_else(|| SymbolAnalyzerError::InvalidSymbolFile)
+                    .into_report()
+                    .attach_printable(format!("No name found in line: `{}`", line))?
                     .trim(),
             );
 
@@ -197,7 +248,7 @@ impl KernelMap {
         Ok(KernelMap { kallsyms })
     }
 
-    pub fn symbol(&self, addr: u64) -> Result<String> {
+    pub fn symbol(&self, addr: u64) -> Result<String, SymbolAnalyzerError> {
         let search_symbol =
             |v: &Vec<KernelSymbolEntry>, start: usize, end: usize, addr: u64| -> Symbol {
                 let mut start = start;
@@ -218,7 +269,12 @@ impl KernelMap {
 
         match search_symbol(&self.kallsyms, 0, self.kallsyms.len(), addr) {
             Symbol::Symbol(s) => Ok(s),
-            _ => Err(Error::msg("Invalid addr")),
+            Symbol::TooSmall => Err(SymbolAnalyzerError::SymbolNotFound)
+                .into_report()
+                .attach_printable(format!("Address {} is too small", addr)),
+            Symbol::TooLarge => Err(SymbolAnalyzerError::SymbolNotFound)
+                .into_report()
+                .attach_printable(format!("Address {} is too large", addr)),
         }
     }
 
@@ -237,22 +293,33 @@ pub struct ExecMap {
 }
 
 impl ExecMap {
-    pub fn new(pid: u32) -> Result<Self> {
+    pub fn new(pid: u32) -> Result<Self, SymbolAnalyzerError> {
         let mapf = fs::OpenOptions::new()
             .read(true)
-            .open(format!("/proc/{}/maps", pid))?;
+            .open(format!("/proc/{}/maps", pid))
+            .into_report()
+            .change_context(SymbolAnalyzerError::FailedReadMap)
+            .attach_printable(format!("Failed to read /proc/{}/maps", pid))?;
+
         let mut reader = BufReader::new(mapf);
         let mut entries = Vec::new();
         // match something like
         // 7fadf15000-7fadf1c000 r-xp 00000000 b3:02 12147                          /usr/lib/libipcon.so.0.0.0
         let re = Regex::new(
             r"^([0-9|a-f]+)-([0-9|a-f]+) r\-xp ([0-9|a-f]+ [0-9|a-f|:]+ [0-9]+ +)(/[a-z|A-Z|0-9|\.|\-|_|/|:]+.*)\n$",
-        )?;
+        ).into_report()
+            .change_context(SymbolAnalyzerError::Unexpected)
+            .attach_printable("Failed to build Regex")?;
 
         loop {
             let mut l = String::new();
 
-            let len = reader.read_line(&mut l)?;
+            let len = reader
+                .read_line(&mut l)
+                .into_report()
+                .change_context(SymbolAnalyzerError::Unexpected)
+                .attach_printable(format!("Failed to read /proc/{}/maps", pid))?;
+
             if len == 0 {
                 break;
             }
@@ -277,7 +344,7 @@ impl ExecMap {
         })
     }
 
-    pub fn symbol(&mut self, addr: u64) -> Result<(u64, String, String)> {
+    pub fn symbol(&mut self, addr: u64) -> Result<(u64, String, String), SymbolAnalyzerError> {
         let mut keys = String::new();
 
         for entry in &self.entries {
@@ -297,10 +364,12 @@ impl ExecMap {
             }
         }
 
-        return Err(Error::msg(format!(
-            "Invalid addr {:x} for pid {}. Available range: {}",
-            addr, self.pid, keys
-        )));
+        return Err(SymbolAnalyzerError::InvalidAddress)
+            .into_report()
+            .attach_printable(format!(
+                "Invalid addr {:x} for pid {}. Available range: {}",
+                addr, self.pid, keys
+            ));
     }
 }
 
@@ -309,7 +378,7 @@ pub struct SymbolAnalyzer {
     map: HashMap<u32, ExecMap>,
 }
 
-pub fn addr_str_to_u64(addr_str: &str) -> Result<u64> {
+pub fn addr_str_to_u64(addr_str: &str) -> Result<u64, SymbolAnalyzerError> {
     let mut u8array: [u8; 8] = [0; 8];
     let mut fixed_str = String::from(addr_str.trim());
 
@@ -317,14 +386,19 @@ pub fn addr_str_to_u64(addr_str: &str) -> Result<u64> {
         fixed_str = format!("0{}", fixed_str);
     }
 
-    let bytes = hex::decode(&fixed_str)?;
+    let bytes = hex::decode(&fixed_str)
+        .into_report()
+        .change_context(SymbolAnalyzerError::InvalidAddress)
+        .attach_printable(format!("Invalid address {}", fixed_str))?;
 
     if bytes.len() > 8 {
-        return Err(Error::msg(format!(
-            "Invalid address {} bytes len: {}",
-            addr_str,
-            bytes.len()
-        )));
+        return Err(SymbolAnalyzerError::InvalidAddress)
+            .into_report()
+            .attach_printable(format!(
+                "Invalid address {} bytes len: {}",
+                addr_str,
+                bytes.len()
+            ));
     }
 
     u8array[8 - bytes.len()..].clone_from_slice(&bytes[..]);
@@ -333,24 +407,28 @@ pub fn addr_str_to_u64(addr_str: &str) -> Result<u64> {
 }
 
 impl SymbolAnalyzer {
-    pub fn new(symbol_file: Option<&str>) -> Result<Self> {
+    pub fn new(symbol_file: Option<&str>) -> Result<Self, SymbolAnalyzerError> {
         Ok(SymbolAnalyzer {
             kmap: KernelMap::new(symbol_file)?,
             map: HashMap::new(),
         })
     }
 
-    pub fn ksymbol_str(&self, addr_str: &str) -> Result<String> {
+    pub fn ksymbol_str(&self, addr_str: &str) -> Result<String, SymbolAnalyzerError> {
         let addr = addr_str_to_u64(addr_str)?;
         self.ksymbol(addr)
     }
 
-    pub fn ksymbol(&self, addr: u64) -> Result<String> {
+    pub fn ksymbol(&self, addr: u64) -> Result<String, SymbolAnalyzerError> {
         self.kmap.symbol(addr)
     }
 
     /// Return (addr, symbol name, file name).
-    pub fn usymbol(&mut self, pid: u32, addr: u64) -> Result<(u64, String, String)> {
+    pub fn usymbol(
+        &mut self,
+        pid: u32,
+        addr: u64,
+    ) -> Result<(u64, String, String), SymbolAnalyzerError> {
         let em = self.map.entry(pid).or_insert(ExecMap::new(pid)?);
         em.symbol(addr)
     }
@@ -390,38 +468,78 @@ pub struct ElfFile {
 }
 
 impl ElfFile {
-    pub fn new(file_name: &str) -> Result<Self> {
-        let mut fpathbuf = Path::new(file_name).canonicalize()?;
+    pub fn new(file_name: &str) -> Result<Self, SymbolAnalyzerError> {
+        let mut fpathbuf = Path::new(file_name)
+            .canonicalize()
+            .into_report()
+            .change_context(SymbolAnalyzerError::InvalidElfFile)
+            .attach_printable(format!("Invalid ELF file: {}", file_name))?;
+
         if fpathbuf.is_symlink() {
-            fpathbuf = fs::read_link(fpathbuf)?.canonicalize()?;
+            fpathbuf = fs::read_link(fpathbuf)
+                .into_report()
+                .change_context(SymbolAnalyzerError::InvalidElfFile)
+                .attach_printable(format!("Invalid ELF file: {}", file_name))?
+                .canonicalize()
+                .into_report()
+                .change_context(SymbolAnalyzerError::InvalidElfFile)
+                .attach_printable(format!("Invalid ELF file: {}", file_name))?;
         }
 
         let fpath = fpathbuf.as_path();
         if !fpath.is_file() {
-            return Err(Error::msg(format!("Invalid ELF binary : {}", file_name)));
+            return Err(SymbolAnalyzerError::InvalidElfFile)
+                .into_report()
+                .attach_printable(format!("Invalid ELF binary : {}", file_name));
         }
 
-        let file = fs::File::open(fpath)?;
+        let file = fs::File::open(fpath)
+            .into_report()
+            .change_context(SymbolAnalyzerError::InvalidElfFile)
+            .attach_printable(format!("Failed to open {}", file_name))?;
+
         let mut files = vec![file];
         let mut sym_addr = HashMap::new();
 
         while let Some(file) = files.pop() {
             let mut new_files = Vec::<std::fs::File>::new();
 
-            let map = unsafe { memmap::Mmap::map(&file)? };
-            let object = object::File::parse(&map[..])?;
+            let map = unsafe {
+                memmap::Mmap::map(&file)
+                    .into_report()
+                    .change_context(SymbolAnalyzerError::Unexpected)
+                    .attach_printable(format!("Failed to map {}", file_name))?
+            };
+
+            let object = object::File::parse(&map[..])
+                .into_report()
+                .change_context(SymbolAnalyzerError::Unexpected)
+                .attach_printable(format!("Failed to parse {}", file_name))?;
 
             if let Ok(Some((lfn, _crc))) = object.gnu_debuglink() {
                 if let Ok(lf) = String::from_utf8(lfn.to_vec()) {
                     let plf = Path::new(&lf);
                     if plf.is_file() {
-                        new_files.push(fs::File::open(lf)?);
+                        new_files.push(
+                            fs::File::open(lf.clone())
+                                .into_report()
+                                .change_context(SymbolAnalyzerError::Unexpected)
+                                .attach_printable(format!("Failed to open {}", lf))?,
+                        );
                     } else if let Some(d) = fpath.to_path_buf().parent() {
                         let mut debug_file = d.to_path_buf();
                         debug_file.push(".debug");
                         debug_file.push(&lf);
                         if debug_file.is_file() {
-                            new_files.push(fs::File::open(debug_file)?);
+                            new_files.push(
+                                fs::File::open(debug_file.clone())
+                                    .into_report()
+                                    .change_context(SymbolAnalyzerError::Unexpected)
+                                    .attach_printable(format!(
+                                        "Failed to open {}",
+                                        debug_file.to_string_lossy()
+                                    ))?,
+                            );
                         }
                     }
                 }
@@ -466,21 +584,25 @@ impl ElfFile {
         })
     }
 
-    pub fn find_symbol(&self, addr: u64) -> Result<String> {
+    pub fn find_symbol(&self, addr: u64) -> Result<String, SymbolAnalyzerError> {
         for entry in self.sym_addr.values() {
             if entry.have(addr) {
                 return Ok(entry.name().to_string());
             }
         }
 
-        Err(Error::msg(format!("Address 0x{:x} Not Found.", addr)))
+        Err(SymbolAnalyzerError::SymbolNotFound)
+            .into_report()
+            .attach_printable(format!("Address 0x{:x} Not Found.", addr))
     }
 
-    pub fn find_addr(&self, sym: &str) -> Result<u64> {
+    pub fn find_addr(&self, sym: &str) -> Result<u64, SymbolAnalyzerError> {
         let entry = self
             .sym_addr
             .get(sym)
-            .ok_or_else(|| Error::msg(format!("Symbol {} Not Found.", sym)))?;
+            .ok_or_else(|| SymbolAnalyzerError::SymbolNotFound)
+            .into_report()
+            .attach_printable(format!("Symbol {} Not Found.", sym))?;
         Ok(entry.start())
     }
 

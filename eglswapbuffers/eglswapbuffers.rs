@@ -2,9 +2,10 @@
 //cspell:word tgid uprobe
 #[allow(unused)]
 use {
-    anyhow::{Context, Error, Result},
+    error_stack::{IntoReport, Result, ResultExt},
     jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
     log::{debug, error, info, warn, LevelFilter},
+    std::error::Error,
 };
 
 use {
@@ -25,7 +26,30 @@ use {
 #[path = "bpf/eglswapbuffers.skel.rs"]
 mod eglswapbuffers;
 
+use std::fmt::Display;
+
 use eglswapbuffers::*;
+
+#[derive(Debug)]
+enum EGLSwapBuffersError {
+    BPFError,
+    SymbolAnalyzerError,
+    Unexpected,
+}
+
+impl Error for EGLSwapBuffersError {}
+
+impl Display for EGLSwapBuffersError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let error_str = match self {
+            EGLSwapBuffersError::SymbolAnalyzerError => "SymbolAnalyzerError",
+            EGLSwapBuffersError::BPFError => "BPFBuilderError",
+            EGLSwapBuffersError::Unexpected => "Unexpected",
+        };
+
+        write!(f, "{}", error_str)
+    }
+}
 
 type SwapEvent = eglswapbuffers_bss_types::swap_event;
 unsafe impl Plain for SwapEvent {}
@@ -79,7 +103,11 @@ fn log2_value(i: usize) -> u32 {
     2_u32.pow(i as u32)
 }
 
-fn process_events(cli: &Cli, probe: &str, maps: &mut EglswapbuffersMaps) -> Result<()> {
+fn process_events(
+    cli: &Cli,
+    probe: &str,
+    maps: &mut EglswapbuffersMaps,
+) -> Result<(), EGLSwapBuffersError> {
     let swap_records = maps.swap_records();
     let mut hash_result = HashMap::new();
 
@@ -162,7 +190,7 @@ fn process_events(cli: &Cli, probe: &str, maps: &mut EglswapbuffersMaps) -> Resu
     Ok(())
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<(), EGLSwapBuffersError> {
     let cli = Cli::parse();
     let max_level = match cli.verbose {
         0 => log::LevelFilter::Info,
@@ -183,7 +211,11 @@ fn main() -> Result<()> {
 
     set_print(Some((PrintLevel::Debug, print_to_log)));
 
-    let mut open_skel = skel_builder.open().with_context(|| "Failed to open bpf.")?;
+    let mut open_skel = skel_builder
+        .open()
+        .into_report()
+        .change_context(EGLSwapBuffersError::BPFError)
+        .attach_printable("Failed to open bpf")?;
 
     if let Some(pid) = cli.pid {
         open_skel.bss().target_pid = pid;
@@ -191,7 +223,11 @@ fn main() -> Result<()> {
         open_skel.bss().target_pid = -1;
     }
 
-    let mut skel = open_skel.load().with_context(|| "Failed to load bpf.")?;
+    let mut skel = open_skel
+        .load()
+        .into_report()
+        .change_context(EGLSwapBuffersError::BPFError)
+        .attach_printable("Failed to load bpf")?;
 
     let mut links = vec![];
     let mut dir = String::from("/usr/lib/");
@@ -211,8 +247,10 @@ fn main() -> Result<()> {
         file = format!("{}/libEGL.so.1", dir);
     }
 
-    let elf_file = ElfFile::new(&file)?;
-    let offset = elf_file.find_addr(probe)? as usize;
+    let elf_file = ElfFile::new(&file).change_context(EGLSwapBuffersError::SymbolAnalyzerError)?;
+    let offset = elf_file
+        .find_addr(probe)
+        .change_context(EGLSwapBuffersError::SymbolAnalyzerError)? as usize;
     /*
      * Parameter
      *  pid > 0: target process to trace
@@ -224,7 +262,9 @@ fn main() -> Result<()> {
         .progs_mut()
         .swap_trace()
         .attach_uprobe(false, -1, file.clone(), offset)
-        .with_context(|| "Failed to attach eglSwapBuffers().")?;
+        .into_report()
+        .change_context(EGLSwapBuffersError::BPFError)
+        .attach_printable(format!("Failed to attach eglSwapBuffers()."))?;
 
     links.push(link);
 
@@ -234,7 +274,9 @@ fn main() -> Result<()> {
 
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
-    })?;
+    })
+    .into_report()
+    .change_context(EGLSwapBuffersError::Unexpected)?;
 
     if cli.duration > 0 {
         println!(

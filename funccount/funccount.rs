@@ -4,12 +4,14 @@
 
 #[allow(unused)]
 use {
+    error_stack::{IntoReport, Result, ResultExt},
     jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
     log::{debug, error, info, warn, LevelFilter},
+    std::error::Error,
+    std::fmt::Display,
 };
 
 use {
-    anyhow::{Context, Error, Result},
     byteorder::ByteOrder,
     byteorder::NativeEndian,
     clap::Parser,
@@ -36,6 +38,29 @@ use {
 #[path = "bpf/funccount.skel.rs"]
 mod funccount;
 use funccount::*;
+
+#[derive(Debug)]
+enum FuncCountError {
+    BPFError,
+    SymbolAnalyzerError,
+    InvalidParameter,
+    Unexpected,
+}
+
+impl Error for FuncCountError {}
+
+impl Display for FuncCountError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let error_str = match self {
+            FuncCountError::SymbolAnalyzerError => "SymbolAnalyzerError",
+            FuncCountError::InvalidParameter => "InvalidParameter",
+            FuncCountError::BPFError => "BPFBuilderError",
+            FuncCountError::Unexpected => "Unexpected",
+        };
+
+        write!(f, "{}", error_str)
+    }
+}
 
 type StackEvent = funccount_bss_types::stacktrace_event;
 unsafe impl Plain for StackEvent {}
@@ -133,7 +158,7 @@ fn process_events(
     result: &mut TraceResult,
     symanalyzer: &mut SymbolAnalyzer,
     exec_map_hash: &mut HashMap<u32, ExecMap>,
-) -> Result<()> {
+) -> Result<(), FuncCountError> {
     if cli.exec {
         let exectime = maps.exectime();
         let show_limit = cli.count.unwrap_or(u32::MAX);
@@ -196,7 +221,11 @@ fn process_events(
                                 break;
                             }
 
-                            let sym = sym_hash.entry(addr).or_insert(symanalyzer.ksymbol(addr)?);
+                            let sym = sym_hash.entry(addr).or_insert(
+                                symanalyzer
+                                    .ksymbol(addr)
+                                    .change_context(FuncCountError::SymbolAnalyzerError)?,
+                            );
                             kstack.push((addr, sym.to_string()));
 
                             i += 1;
@@ -263,7 +292,7 @@ fn process_events(
     Ok(())
 }
 
-fn print_result(cli: &Cli, result: &mut TraceResult, runtime_s: u64) -> Result<()> {
+fn print_result(cli: &Cli, result: &mut TraceResult, runtime_s: u64) -> Result<(), FuncCountError> {
     let runtime_s = if runtime_s == 0 { 1 } else { runtime_s };
 
     println!();
@@ -404,13 +433,11 @@ fn print_result(cli: &Cli, result: &mut TraceResult, runtime_s: u64) -> Result<(
     Ok(())
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<(), FuncCountError> {
     let mut cli = Cli::parse();
     let max_level = match cli.verbose {
         0 => log::LevelFilter::Info,
-        1 => log::LevelFilter::Debug,
-        2 => log::LevelFilter::Trace,
-        _ => log::LevelFilter::Off,
+        _ => log::LevelFilter::Debug,
     };
 
     JloggerBuilder::new()
@@ -424,7 +451,11 @@ fn main() -> Result<()> {
     let skel_builder = FunccountSkelBuilder::default();
     set_print(Some((PrintLevel::Debug, print_to_log)));
 
-    let mut open_skel = skel_builder.open().with_context(|| "Failed to open bpf.")?;
+    let mut open_skel = skel_builder
+        .open()
+        .into_report()
+        .change_context(FuncCountError::BPFError)
+        .attach_printable("Failed to open bpf")?;
 
     open_skel.bss().self_pid = std::process::id() as i32;
 
@@ -456,7 +487,12 @@ fn main() -> Result<()> {
         cli.file = false;
     }
 
-    let mut skel = open_skel.load().with_context(|| "Failed to load bpf.")?;
+    let mut skel = open_skel
+        .load()
+        .into_report()
+        .change_context(FuncCountError::BPFError)
+        .attach_printable("Failed to load bpf")?;
+
     let mut result = TraceResult {
         stack: HashMap::new(),
         exec: Vec::new(),
@@ -487,9 +523,14 @@ fn main() -> Result<()> {
             .sample_cb(handle_exec_trace)
             .pages(2)
             .build()
-            .with_context(|| "Failed to create perf buffer")?;
+            .into_report()
+            .change_context(FuncCountError::BPFError)
+            .attach_printable("Failed to create perf buffer")?;
 
-        let km = KernelMap::new(None)?;
+        let km = KernelMap::new(None)
+            .change_context(FuncCountError::Unexpected)
+            .attach_printable("Failed to load kernel map")?;
+
         let tracepoints: Vec<&str> = include_str!("tracepoints").split("\n").collect();
         let mut sym_to_trace = &cli.args;
         let mut sym_to_trace_vec = vec![];
@@ -521,17 +562,27 @@ fn main() -> Result<()> {
         }
 
         if sym_to_trace.is_empty() {
-            return Err(Error::msg("No symbol file found."));
+            return Err(FuncCountError::InvalidParameter)
+                .into_report()
+                .attach_printable("No symbol found");
         }
 
         for arg in sym_to_trace {
             let mut processed = false;
 
-            let tre = Regex::new(r"t:(.+):(.+)")?;
+            jdebug!("arg: {}", arg);
+
+            let tre = Regex::new(r"t:(.+):(.+)")
+                .into_report()
+                .change_context(FuncCountError::Unexpected)?;
+
             if tre.is_match(arg) {
                 for g in tre.captures_iter(arg) {
                     let pattern = format!("^{}:{}$", &g[1], &g[2]);
-                    let re = Regex::new(&pattern)?;
+                    let re = Regex::new(&pattern)
+                        .into_report()
+                        .change_context(FuncCountError::Unexpected)?;
+
                     let mut tps = vec![];
 
                     for &tp in &tracepoints {
@@ -542,7 +593,9 @@ fn main() -> Result<()> {
                     }
 
                     if tps.is_empty() {
-                        return Err(Error::msg(format!("Invalid symbol: {}", arg)));
+                        return Err(FuncCountError::InvalidParameter)
+                            .into_report()
+                            .attach_printable(format!("Invalid symbol: {}", arg));
                     }
 
                     println!("Attaching {} Tracepoint.", tps.len());
@@ -577,15 +630,22 @@ fn main() -> Result<()> {
                 }
             }
 
-            let tre = Regex::new(r"u:(.+):(.+)")?;
+            let tre = Regex::new(r"u:(.+):(.+)")
+                .into_report()
+                .change_context(FuncCountError::Unexpected)?;
+
             if tre.is_match(arg) {
                 for g in tre.captures_iter(arg) {
                     let file = &g[1];
-                    let elf = ElfFile::new(file)?;
-                    let pattern = format!("^{}$", &g[2]);
-                    let re = Regex::new(&pattern)?;
-                    let mut symbols = vec![];
+                    let elf =
+                        ElfFile::new(file).change_context(FuncCountError::SymbolAnalyzerError)?;
 
+                    let pattern = format!("^{}$", &g[2]);
+                    let re = Regex::new(&pattern)
+                        .into_report()
+                        .change_context(FuncCountError::Unexpected)?;
+
+                    let mut symbols = vec![];
                     for &sy in elf.symbol_vec().iter() {
                         if re.is_match(sy.name()) {
                             symbols.push((sy.name(), sy.start()));
@@ -593,7 +653,9 @@ fn main() -> Result<()> {
                     }
 
                     if symbols.is_empty() {
-                        return Err(Error::msg(format!("Invalid symbol: {}", arg)));
+                        return Err(FuncCountError::InvalidParameter)
+                            .into_report()
+                            .attach_printable(format!("Invalid symbol: {}", arg));
                     }
 
                     let num = symbols.len();
@@ -614,22 +676,17 @@ fn main() -> Result<()> {
                          *  pid == -1 : trace all processes
                          * See bpf_program__attach_uprobe()
                          */
-                        match skel.progs_mut().stacktrace_ub().attach_uprobe(
-                            false,
-                            pid,
-                            file,
-                            offset as usize,
-                        ) {
-                            Ok(link) => links.push(link),
-                            Err(e) => {
-                                log::warn!(
-                                    "Failed to attach {}({:x}): {}, skipped",
-                                    symbol,
-                                    offset,
-                                    e
-                                )
-                            }
-                        }
+                        let link = skel
+                            .progs_mut()
+                            .stacktrace_ub()
+                            .attach_uprobe(false, pid, file, offset as usize)
+                            .into_report()
+                            .change_context(FuncCountError::BPFError)
+                            .attach_printable(format!(
+                                "Failed to attach {}({:x}) with pid {}",
+                                symbol, offset, pid
+                            ))?;
+                        links.push(link);
                     }
                 }
                 processed = true;
@@ -639,12 +696,17 @@ fn main() -> Result<()> {
                 continue;
             }
 
-            let tre = Regex::new(r"(k:)*(.+)")?;
+            let tre = Regex::new(r"(k:)*(.+)")
+                .into_report()
+                .change_context(FuncCountError::Unexpected)?;
+
             if tre.is_match(arg) {
                 for g in tre.captures_iter(arg) {
                     let mut func_names = vec![];
                     let pattern = format!("^{}$", &g[2]);
-                    let re = Regex::new(&pattern)?;
+                    let re = Regex::new(&pattern)
+                        .into_report()
+                        .change_context(FuncCountError::Unexpected)?;
 
                     for &sy in km.symbol_vec().iter() {
                         if sy.ktype() != NmSymbolType::Text {
@@ -656,7 +718,9 @@ fn main() -> Result<()> {
                     }
 
                     if func_names.is_empty() {
-                        return Err(Error::msg(format!("Invalid symbol: {}", arg)));
+                        return Err(FuncCountError::InvalidParameter)
+                            .into_report()
+                            .attach_printable(format!("No symbol found in `{}`", arg));
                     }
 
                     let num = func_names.len();
@@ -688,7 +752,9 @@ fn main() -> Result<()> {
         }
 
         if links.is_empty() {
-            return Err(Error::msg("No traceable symbols."));
+            return Err(FuncCountError::Unexpected)
+                .into_report()
+                .attach_printable("No traceable symbol found");
         }
 
         let start = Instant::now();
@@ -697,7 +763,9 @@ fn main() -> Result<()> {
 
         ctrlc::set_handler(move || {
             r.store(false, Ordering::SeqCst);
-        })?;
+        })
+        .into_report()
+        .change_context(FuncCountError::Unexpected)?;
 
         if cli.duration > 0 {
             println!(
@@ -742,7 +810,9 @@ fn main() -> Result<()> {
     }
 
     println!("Tracing finished, Processing data...");
-    let mut symanalyzer = SymbolAnalyzer::new(None)?;
+    let mut symanalyzer =
+        SymbolAnalyzer::new(None).change_context(FuncCountError::SymbolAnalyzerError)?;
+
     process_events(
         &cli,
         &mut skel.maps(),
