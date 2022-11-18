@@ -1,8 +1,5 @@
 use std::fmt::Display;
 
-//cspell:word demangle ktype kallsyms mapf libipcon kmap ksymbol usymbol fpathbuf
-//cspell:word canonicalize fpath memmap Mmap debuglink syms dynsyms
-//cspell:word symbolanalyzer testfiles kernelmap
 #[allow(unused)]
 use {
     error_stack::{IntoReport, Result, ResultExt},
@@ -294,14 +291,14 @@ pub struct ExecMap {
 
 impl ExecMap {
     pub fn new(pid: u32) -> Result<Self, SymbolAnalyzerError> {
-        let mapf = fs::OpenOptions::new()
+        let map = fs::OpenOptions::new()
             .read(true)
             .open(format!("/proc/{}/maps", pid))
             .into_report()
             .change_context(SymbolAnalyzerError::FailedReadMap)
             .attach_printable(format!("Failed to read /proc/{}/maps", pid))?;
 
-        let mut reader = BufReader::new(mapf);
+        let mut reader = BufReader::new(map);
         let mut entries = Vec::new();
         // match something like
         // 7fadf15000-7fadf1c000 r-xp 00000000 b3:02 12147                          /usr/lib/libipcon.so.0.0.0
@@ -545,10 +542,10 @@ impl ElfFile {
                 }
             }
 
-            let syms = object.symbols();
-            let dynsyms = object.dynamic_symbols();
+            let symbols = object.symbols();
+            let dynamic_symbols = object.dynamic_symbols();
 
-            for sym in syms {
+            for sym in symbols {
                 if let Ok(name) = sym.name() {
                     let name = cpp_demangle_sym(name);
                     let entry = SymbolEntry {
@@ -561,7 +558,7 @@ impl ElfFile {
                 }
             }
 
-            for sym in dynsyms {
+            for sym in dynamic_symbols {
                 if let Ok(name) = sym.name() {
                     let name = cpp_demangle_sym(name);
                     let entry = SymbolEntry {
@@ -643,7 +640,7 @@ mod tests {
     }
 
     #[test]
-    fn kernelmap01() {
+    fn kernel_map01() {
         use crate::symbolanalyzer::KernelMap;
         let km = KernelMap::new(Some("testfiles/test_symbol")).unwrap();
 

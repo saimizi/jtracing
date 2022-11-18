@@ -45,21 +45,21 @@ struct {
 	__uint(max_entries, 10000);
 	__type(key, struct stacktrace_event);
 	__type(value, u64);
-} stackcnt SEC(".maps");
+} stack_cnt SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_STACK_TRACE);
 	__type(key, u32);
 	__uint(value_size, PERF_MAX_STACK_DEPTH * sizeof(u64));
 	__uint(max_entries, 1000);
-} stackmap SEC(".maps");
+} stack_map SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 10000);
 	__type(key, struct exectrace_event);
 	__type(value, int);
-} exectime SEC(".maps");
+} exec_time SEC(".maps");
 
 int self_pid = 0;
 int target_pid = 0;
@@ -82,17 +82,17 @@ int do_stack_trace(struct pt_regs *ctx) {
 
 	key.pid = pid;
 	bpf_get_current_comm(&key.comm, sizeof(key.comm));
-	key.kstack = bpf_get_stackid(ctx, &stackmap, 0 | BPF_F_FAST_STACK_CMP);
-	key.ustack = bpf_get_stackid(ctx, &stackmap, 0 | BPF_F_FAST_STACK_CMP | BPF_F_USER_STACK);
+	key.kstack = bpf_get_stackid(ctx, &stack_map, 0 | BPF_F_FAST_STACK_CMP);
+	key.ustack = bpf_get_stackid(ctx, &stack_map, 0 | BPF_F_FAST_STACK_CMP | BPF_F_USER_STACK);
 	if ((int)key.kstack < 0 && (int)key.ustack < 0) {
 		return 0;
 	}
 
-	val = bpf_map_lookup_elem(&stackcnt, &key);
+	val = bpf_map_lookup_elem(&stack_cnt, &key);
 	if (val) {
 		(*val)++;
 	} else {
-		bpf_map_update_elem(&stackcnt, &key, &one, BPF_NOEXIST);
+		bpf_map_update_elem(&stack_cnt, &key, &one, BPF_NOEXIST);
 	}
 
 	return 0;
@@ -129,7 +129,7 @@ int do_exec_trace(struct pt_regs *ctx) {
 
 
 	__builtin_memcpy(&ekey.ts, &ts, sizeof(ts));
-	bpf_map_update_elem(&exectime, &ekey, &one, BPF_NOEXIST);
+	bpf_map_update_elem(&exec_time, &ekey, &one, BPF_NOEXIST);
 
 	return 0;
 }

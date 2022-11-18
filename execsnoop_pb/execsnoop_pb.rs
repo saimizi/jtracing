@@ -1,6 +1,3 @@
-//cspell:word  libbpf tracelib execsnoop skel memlock rlimit PPID ppid rodata chrono
-//cspell:word nanos TSTP TTOU XCPU XFSZ VTALRM SEGV ALRM STKFLT CHLD TTIN ABRT
-//cspell:word  perfbuf
 #[allow(unused)]
 use {
     anyhow::{Context, Error, Result},

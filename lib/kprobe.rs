@@ -1,4 +1,3 @@
-//cspell:word Kprobe fname narg kprobes
 #[allow(unused)]
 use {
     crate::{writeln_proc, writeln_str_file},
@@ -55,8 +54,8 @@ impl Kprobe {
         let mut kprobe = format!("p:{} {}", self.group, self.fname);
 
         for arg in &self.args {
-            let narg = format!(" {}", arg);
-            kprobe.push_str(&narg);
+            let s = format!(" {}", arg);
+            kprobe.push_str(&s);
         }
 
         let kprobe_events = format!("{}/kprobe_events", self.tracing_top);
@@ -94,8 +93,8 @@ impl Kprobe {
         if let Ok(probes) = fs::read_to_string(&kprobe_events).await {
             let mut entry = format!("p:kprobes/{} {}", self.group, self.fname);
             for arg in &self.args {
-                let narg = format!(" {}", arg);
-                entry.push_str(&narg);
+                let s = format!(" {}", arg);
+                entry.push_str(&s);
             }
 
             if probes.contains(&entry) {

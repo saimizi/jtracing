@@ -1,7 +1,3 @@
-//cspell:word byteorder libbpf tracelib funccount memlock rlimit skel exectrace kstack ustack
-//cspell:word symanalyzer exectime pname ksymbol usymbol stackcnt stackmap symname
-//cspell:word perfbuf tracepoints Tracepoint uprobe Uprobes ktype kprobe Kprobes
-
 #[allow(unused)]
 use {
     error_stack::{IntoReport, Result, ResultExt},
@@ -160,10 +156,10 @@ fn process_events(
     exec_map_hash: &mut HashMap<u32, ExecMap>,
 ) -> Result<(), FuncCountError> {
     if cli.exec {
-        let exectime = maps.exectime();
+        let exec_time = maps.exec_time();
         let show_limit = cli.count.unwrap_or(u32::MAX);
 
-        for key in exectime.keys() {
+        for key in exec_time.keys() {
             let mut entry = ExecTraceEvent::default();
             plain::copy_from_bytes(&mut entry, &key).expect("Corrupted event data");
             let ts: u64 = NativeEndian::read_u64(&entry.ts);
@@ -171,11 +167,11 @@ fn process_events(
 
             let mut probe = String::from("Unknown");
             if entry.frame0_type == 0 {
-                if let Ok(pname) = symanalyzer.ksymbol(probe_addr) {
-                    probe = pname;
+                if let Ok(p_name) = symanalyzer.ksymbol(probe_addr) {
+                    probe = p_name;
                 }
-            } else if let Ok((_, pname, _file)) = symanalyzer.usymbol(entry.pid, probe_addr) {
-                probe = pname;
+            } else if let Ok((_, p_name, _file)) = symanalyzer.usymbol(entry.pid, probe_addr) {
+                probe = p_name;
             }
 
             result.exec.push(ExecTraceResult {
@@ -192,13 +188,13 @@ fn process_events(
 
         result.exec.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap());
     } else {
-        let stackcnt = maps.stackcnt();
-        let stackmap = maps.stackmap();
+        let stack_cnt = maps.stack_cnt();
+        let stack_map = maps.stack_map();
         let mut sym_hash = HashMap::new();
         let mut pid_sym_hash: HashMap<(u32, u64), (u64, String, String)> = HashMap::new();
 
-        for key in stackcnt.keys() {
-            if let Ok(Some(data)) = stackcnt.lookup(&key, MapFlags::ANY) {
+        for key in stack_cnt.keys() {
+            if let Ok(Some(data)) = stack_cnt.lookup(&key, MapFlags::ANY) {
                 let mut stack = StackEvent::default();
                 plain::copy_from_bytes(&mut stack, &key).expect("Corrupted event data");
 
@@ -210,7 +206,7 @@ fn process_events(
 
                 if stack.kstack > 0 {
                     if let Ok(Some(ks)) =
-                        stackmap.lookup(&stack.kstack.to_ne_bytes(), MapFlags::ANY)
+                        stack_map.lookup(&stack.kstack.to_ne_bytes(), MapFlags::ANY)
                     {
                         let num = ks.len() / 8;
                         let mut i = 0_usize;
@@ -235,7 +231,7 @@ fn process_events(
 
                 if stack.ustack > 0 {
                     if let Ok(Some(us)) =
-                        stackmap.lookup(&stack.ustack.to_ne_bytes(), MapFlags::ANY)
+                        stack_map.lookup(&stack.ustack.to_ne_bytes(), MapFlags::ANY)
                     {
                         let num = us.len() / 8;
                         let mut i = 0_usize;
@@ -247,20 +243,20 @@ fn process_events(
                             }
                             i += 1;
 
-                            if let Some((sym_addr, symname, filename)) =
+                            if let Some((sym_addr, sym_name, filename)) =
                                 pid_sym_hash.get(&(stack.pid, addr))
                             {
-                                ustack.push((*sym_addr, symname.to_string(), filename.to_string()));
+                                ustack.push((*sym_addr, sym_name.to_string(), filename.to_string()));
                                 continue;
                             }
 
                             if let Some(em) = exec_map_hash.get_mut(&stack.pid) {
-                                if let Ok((sym_addr, symname, filename)) = em.symbol(addr) {
+                                if let Ok((sym_addr, sym_name, filename)) = em.symbol(addr) {
                                     pid_sym_hash.insert(
                                         (stack.pid, addr),
-                                        (sym_addr, symname.clone(), filename.clone()),
+                                        (sym_addr, sym_name.clone(), filename.clone()),
                                     );
-                                    ustack.push((sym_addr, symname, filename));
+                                    ustack.push((sym_addr, sym_name, filename));
                                     continue;
                                 }
                             }

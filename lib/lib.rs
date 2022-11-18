@@ -1,5 +1,3 @@
-//cspell:word kprobe symbolanalyzer tracelog cfile fopen cbuf fwrite libc debugfs memlock rlimit
-//cspell:word rlim setrlimit
 #[allow(unused)]
 use {
     anyhow::{Context, Error, Result},
@@ -33,21 +31,21 @@ pub use tracelog::TraceLog;
 
 pub fn writeln_proc(f: &str, s: &str, append: bool) -> Result<()> {
     unsafe {
-        let cfile = CString::new(f)?;
+        let c_file = CString::new(f)?;
         let mut mode = CString::new("w")?;
         if append {
             mode = CString::new("a")?;
         }
-        let fp = libc::fopen(cfile.as_ptr(), mode.as_ptr());
+        let fp = libc::fopen(c_file.as_ptr(), mode.as_ptr());
 
         if fp.is_null() {
             return Err(Error::msg(format!("Failed to open {}", f)));
         }
 
-        let cbuf = CString::new(s)?;
+        let c_buf = CString::new(s)?;
         let ret = libc::fwrite(
-            cbuf.as_ptr() as *const libc::c_void,
-            cbuf.as_bytes().len(),
+            c_buf.as_ptr() as *const libc::c_void,
+            c_buf.as_bytes().len(),
             1,
             fp,
         ) as i32;

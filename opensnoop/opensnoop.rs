@@ -1,4 +1,3 @@
-//cspell:word oneshot tracelib Kprobe ctrc fname tlog tpid execve
 #[allow(unused)]
 use {
     anyhow::{Context, Error, Result},

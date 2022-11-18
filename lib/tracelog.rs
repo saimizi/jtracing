@@ -1,4 +1,3 @@
-//cspell:word oneline errlog tsplitter rfind
 #[allow(unused)]
 use {
     crate::{trace_top_dir, writeln_str_file},
@@ -89,28 +88,28 @@ impl TraceLog {
             .ok_or_else(|| Error::msg("Trace terminated"))?;
 
         let mut to_process = log.as_str();
-        let errlog = || Error::msg(format!("Invalid log string : {}", &log));
-        let mut splitter = to_process.find('[').ok_or_else(errlog)?;
+        let err_log = || Error::msg(format!("Invalid log string : {}", &log));
+        let mut splitter = to_process.find('[').ok_or_else(err_log)?;
 
         {
             let task_pid_str = &to_process[..splitter];
             jdebug!("task_pid_str: {}", task_pid_str);
-            let tsplitter = task_pid_str.rfind('-').ok_or_else(errlog)?;
-            task = String::from(task_pid_str[..tsplitter].trim());
-            pid = task_pid_str[tsplitter + 1..].trim().parse()?;
+            let splitter = task_pid_str.rfind('-').ok_or_else(err_log)?;
+            task = String::from(task_pid_str[..splitter].trim());
+            pid = task_pid_str[splitter + 1..].trim().parse()?;
         }
 
         to_process = &to_process[splitter + 1..];
         jdebug!("log str: {}", to_process);
-        splitter = to_process.find("] ").ok_or_else(errlog)?;
+        splitter = to_process.find("] ").ok_or_else(err_log)?;
         let cpu = to_process[..splitter].parse()?;
 
         to_process = &to_process[splitter + 2..];
-        splitter = to_process.find(' ').ok_or_else(errlog)?;
+        splitter = to_process.find(' ').ok_or_else(err_log)?;
         let flag = String::from(to_process[..splitter].trim());
 
         to_process = &to_process[splitter + 1..];
-        splitter = to_process.find(':').ok_or_else(errlog)?;
+        splitter = to_process.find(':').ok_or_else(err_log)?;
         let ts = to_process[..splitter].trim().parse()?;
 
         to_process = &to_process[splitter + 1..];

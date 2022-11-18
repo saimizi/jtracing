@@ -1,6 +1,3 @@
-//cspell:word libbpf tracelib skel execsnoop  memlock rlimit ppid PPID rodata chrono
-//cspell:word nanos TSTP TTOU XCPU XFSZ VTALRM SEGV ALRM STKFLT CHLD TTIN ABRT rbuilder
-//cspell:word ringbuf
 #[allow(unused)]
 use {
     anyhow::{Context, Error, Result},

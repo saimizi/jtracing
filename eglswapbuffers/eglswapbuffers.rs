@@ -1,5 +1,3 @@
-//cspell:word libbpf tracelib eglswapbuffers memlock rlimit skel libpath
-//cspell:word tgid uprobe
 #[allow(unused)]
 use {
     error_stack::{IntoReport, Result, ResultExt},
