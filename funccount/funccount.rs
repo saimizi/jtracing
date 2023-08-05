@@ -11,7 +11,11 @@ use {
     byteorder::ByteOrder,
     byteorder::NativeEndian,
     clap::Parser,
-    libbpf_rs::{set_print, MapFlags, PerfBufferBuilder, PrintLevel},
+    libbpf_rs::{
+        set_print,
+        skel::{OpenSkel, SkelBuilder},
+        MapFlags, PerfBufferBuilder, PrintLevel,
+    },
     plain::Plain,
     regex::Regex,
     std::{
@@ -246,7 +250,11 @@ fn process_events(
                             if let Some((sym_addr, sym_name, filename)) =
                                 pid_sym_hash.get(&(stack.pid, addr))
                             {
-                                ustack.push((*sym_addr, sym_name.to_string(), filename.to_string()));
+                                ustack.push((
+                                    *sym_addr,
+                                    sym_name.to_string(),
+                                    filename.to_string(),
+                                ));
                                 continue;
                             }
 

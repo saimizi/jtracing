@@ -7,7 +7,11 @@ use {
 
 use {
     clap::Parser,
-    libbpf_rs::{set_print, PerfBufferBuilder, PrintLevel},
+    libbpf_rs::{
+        set_print,
+        skel::{OpenSkel, SkelBuilder, Skel},
+        PerfBufferBuilder, PrintLevel,
+    },
     plain::Plain,
     std::sync::{
         atomic::{AtomicBool, Ordering},

@@ -8,7 +8,11 @@ use {
 
 use {
     clap::Parser,
-    libbpf_rs::{set_print, MapFlags, PrintLevel},
+    libbpf_rs::{
+        set_print,
+        skel::{OpenSkel, SkelBuilder},
+        MapFlags, PrintLevel,
+    },
     plain::Plain,
     std::{
         collections::HashMap,

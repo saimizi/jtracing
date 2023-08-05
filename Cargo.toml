@@ -40,7 +40,7 @@ clap = { version="3.1", features = ["derive"] }
 regex = "1"
 rand = "0.8"
 tokio = {version = "1", features = ["full"]}
-libbpf-rs = "0.19"
+libbpf-rs = "0.21"
 libc = "0.2"
 plain = "0.2"
 ctrlc = "3.2"
@@ -56,6 +56,6 @@ error-stack = "0.2"
 strip = true
 
 [build-dependencies]
-libbpf-cargo = "0.13"
+libbpf-cargo = "0.21"
 jlogger = "0.1"
 log = "0.4"

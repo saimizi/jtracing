@@ -7,7 +7,11 @@ use {
 
 use {
     clap::Parser,
-    libbpf_rs::{set_print, PrintLevel, RingBufferBuilder},
+    libbpf_rs::{
+        set_print,
+        skel::{OpenSkel, Skel, SkelBuilder},
+        PrintLevel, RingBufferBuilder,
+    },
     plain::Plain,
     std::sync::{
         atomic::{AtomicBool, Ordering},
@@ -247,7 +251,8 @@ fn main() -> Result<()> {
     };
 
     let mut rbuilder = RingBufferBuilder::new();
-    rbuilder.add(skel.maps().rb(), handle_event)?;
+    let map = skel.maps();
+    rbuilder.add(&map.rb(), handle_event)?;
     let ringbuf = rbuilder
         .build()
         .with_context(|| "Failed to create ring buffer")?;
