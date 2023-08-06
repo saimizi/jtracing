@@ -1,16 +1,12 @@
 #[allow(unused)]
 use {
-    error_stack::{IntoReport, Result, ResultExt},
-    jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
-    log::{debug, error, info, warn, LevelFilter},
-    std::error::Error,
-    std::fmt::Display,
-};
-
-use {
     byteorder::ByteOrder,
     byteorder::NativeEndian,
     clap::Parser,
+    error_stack::{IntoReport, Result, ResultExt},
+    jlogger_tracing::{
+        jdebug, jerror, jinfo, jtrace, jwarn, JloggerBuilder, LevelFilter, LogTimeFormat,
+    },
     libbpf_rs::{
         set_print,
         skel::{OpenSkel, SkelBuilder},
@@ -18,6 +14,8 @@ use {
     },
     plain::Plain,
     regex::Regex,
+    std::error::Error,
+    std::fmt::Display,
     std::{
         collections::HashMap,
         fs,
@@ -70,9 +68,9 @@ unsafe impl Plain for ExecTraceEvent {}
 
 fn print_to_log(level: PrintLevel, msg: String) {
     match level {
-        PrintLevel::Debug => log::trace!("{}", msg.trim_matches('\n')),
-        PrintLevel::Info => log::info!("{}", msg.trim_matches('\n')),
-        PrintLevel::Warn => log::warn!("{}", msg.trim_matches('\n')),
+        PrintLevel::Debug => jtrace!("{}", msg.trim_matches('\n')),
+        PrintLevel::Info => jinfo!("{}", msg.trim_matches('\n')),
+        PrintLevel::Warn => jwarn!("{}", msg.trim_matches('\n')),
     }
 }
 
@@ -440,13 +438,12 @@ fn print_result(cli: &Cli, result: &mut TraceResult, runtime_s: u64) -> Result<(
 fn main() -> Result<(), FuncCountError> {
     let mut cli = Cli::parse();
     let max_level = match cli.verbose {
-        0 => log::LevelFilter::Info,
-        _ => log::LevelFilter::Debug,
+        0 => LevelFilter::INFO,
+        _ => LevelFilter::DEBUG,
     };
 
     JloggerBuilder::new()
         .max_level(max_level)
-        .log_time(false)
         .log_runtime(false)
         .build();
 
@@ -473,21 +470,21 @@ fn main() -> Result<(), FuncCountError> {
         open_skel.bss().trace_type = 1;
 
         if cli.stack {
-            log::warn!("Show stack option -s is unused when using -e.");
+            jwarn!("Show stack option -s is unused when using -e.");
             cli.stack = false;
         }
     } else if cli.relative {
-        log::warn!("Show relative time option -r is unused when -e is unused.");
+        jwarn!("Show relative time option -r is unused when -e is unused.");
         cli.relative = false;
     }
 
     if !cli.stack && cli.addr {
-        log::warn!("Show addr option -a is unused when -s is unused.");
+        jwarn!("Show addr option -a is unused when -s is unused.");
         cli.addr = false;
     }
 
     if !cli.stack && cli.file {
-        log::warn!("Show file option -f is unused when -s is unused.");
+        jwarn!("Show file option -f is unused when -s is unused.");
         cli.file = false;
     }
 
@@ -611,7 +608,7 @@ fn main() -> Result<(), FuncCountError> {
                         {
                             Ok(link) => links.push(link),
                             Err(e) => {
-                                log::warn!(
+                                jwarn!(
                                     "Failed to attach {}/{}: {}, skipped",
                                     tp_category,
                                     tp_name,
@@ -664,7 +661,7 @@ fn main() -> Result<(), FuncCountError> {
 
                     let num = symbols.len();
                     if num > 100 {
-                        log::warn!(
+                        jwarn!(
                             "Tracing too many uprobe symbols ({}) maybe not what you want.",
                             num
                         );
@@ -729,7 +726,7 @@ fn main() -> Result<(), FuncCountError> {
 
                     let num = func_names.len();
                     if num > 100 {
-                        log::warn!(
+                        jwarn!(
                             "Tracing too many kprobe symbols ({}) maybe not what you want.",
                             num
                         );
@@ -744,7 +741,7 @@ fn main() -> Result<(), FuncCountError> {
                             .attach_kprobe(false, func_name)
                         {
                             Ok(link) => links.push(link),
-                            Err(e) => log::warn!("Failed to attach {}: {}, skipped.", func_name, e),
+                            Err(e) => jwarn!("Failed to attach {}: {}, skipped.", func_name, e),
                         }
                     }
                     processed = true;

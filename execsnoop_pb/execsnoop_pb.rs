@@ -1,15 +1,13 @@
 #[allow(unused)]
 use {
-    anyhow::{Context, Error, Result},
-    jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
-    log::{debug, error, info, warn},
-};
-
-use {
     clap::Parser,
+    error_stack::{Report, Result, ResultExt},
+    jlogger_tracing::{
+        jdebug, jerror, jinfo, jtrace, jwarn, JloggerBuilder, LevelFilter, LogTimeFormat,
+    },
     libbpf_rs::{
         set_print,
-        skel::{OpenSkel, SkelBuilder, Skel},
+        skel::{OpenSkel, Skel, SkelBuilder},
         PerfBufferBuilder, PrintLevel,
     },
     plain::Plain,
@@ -17,18 +15,19 @@ use {
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    tracelib::{bump_memlock_rlimit, bytes_to_string},
+    tracelib::{bump_memlock_rlimit, bytes_to_string, JtraceError},
 };
 
 #[path = "bpf/execsnoop_pb.skel.rs"]
 mod execsnoop_pb;
+use error_stack::IntoReport;
 use execsnoop_pb::*;
 
 fn print_to_log(level: PrintLevel, msg: String) {
     match level {
-        PrintLevel::Debug => log::debug!("{}", msg.trim_end_matches('\n')),
-        PrintLevel::Info => log::info!("{}", msg.trim_end_matches('\n')),
-        PrintLevel::Warn => log::warn!("{}", msg.trim_end_matches('\n')),
+        PrintLevel::Debug => jdebug!("{}", msg.trim_end_matches('\n')),
+        PrintLevel::Info => jinfo!("{}", msg.trim_end_matches('\n')),
+        PrintLevel::Warn => jwarn!("{}", msg.trim_end_matches('\n')),
     }
 }
 
@@ -66,20 +65,19 @@ struct Cli {
 type Event = execsnoop_pb_bss_types::event;
 unsafe impl Plain for Event {}
 
-fn main() -> Result<()> {
+fn main() -> Result<(), JtraceError> {
     let cli = Cli::parse();
     let max_level = match cli.verbose {
-        0 => log::LevelFilter::Off,
-        1 => log::LevelFilter::Error,
-        2 => log::LevelFilter::Warn,
-        3 => log::LevelFilter::Info,
-        4 => log::LevelFilter::Debug,
-        _ => log::LevelFilter::Off,
+        0 => LevelFilter::OFF,
+        1 => LevelFilter::ERROR,
+        2 => LevelFilter::WARN,
+        3 => LevelFilter::INFO,
+        4 => LevelFilter::DEBUG,
+        _ => LevelFilter::OFF,
     };
 
     JloggerBuilder::new()
         .max_level(max_level)
-        .log_time(false)
         .log_runtime(false)
         .build();
 
@@ -88,11 +86,19 @@ fn main() -> Result<()> {
     let skel_builder = ExecsnoopPbSkelBuilder::default();
     set_print(Some((PrintLevel::Debug, print_to_log)));
 
-    let mut open_skel = skel_builder.open().with_context(|| "Failed to open bpf.")?;
+    let mut open_skel = skel_builder
+        .open()
+        .into_report()
+        .change_context(JtraceError::IOError)
+        .attach_printable("Failed to open bpf.")?;
 
     open_skel.rodata().min_duration_ns = cli.duration * 1000000_u64;
 
-    let mut skel = open_skel.load().with_context(|| "Failed to load bpf")?;
+    let mut skel = open_skel
+        .load()
+        .into_report()
+        .change_context(JtraceError::IOError)
+        .attach_printable("Failed to load bpf")?;
 
     let start = chrono::Local::now();
     let show_timestamp = cli.timestamp;
@@ -252,9 +258,14 @@ fn main() -> Result<()> {
         .sample_cb(handle_event)
         .pages(16) // 4k * 16
         .build()
-        .with_context(|| "Failed to create perf buffer")?;
+        .into_report()
+        .change_context(JtraceError::IOError)
+        .attach_printable("Failed to create perf buffer")?;
 
-    skel.attach().with_context(|| "Failed to load bpf")?;
+    skel.attach()
+        .into_report()
+        .change_context(JtraceError::IOError)
+        .attach_printable("Failed to load bpf")?;
 
     let print_timestamp_str = || {
         if cli.timestamp {
@@ -297,7 +308,9 @@ fn main() -> Result<()> {
 
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
-    })?;
+    })
+    .into_report()
+    .change_context(JtraceError::IOError)?;
 
     while running.load(Ordering::SeqCst) {
         // ctrl-c will fail perfbuf.poll()

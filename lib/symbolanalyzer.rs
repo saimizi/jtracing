@@ -3,8 +3,6 @@ use std::fmt::Display;
 #[allow(unused)]
 use {
     error_stack::{IntoReport, Result, ResultExt},
-    jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
-    log::{debug, error, info, warn, LevelFilter},
     std::error::Error,
 };
 

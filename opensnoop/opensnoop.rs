@@ -1,9 +1,12 @@
+use error_stack::IntoReport;
+
 #[allow(unused)]
 use {
-    anyhow::{Context, Error, Result},
     clap::Parser,
-    jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
-    log::{debug, error, info, warn, LevelFilter},
+    error_stack::{Report, Result, ResultExt},
+    jlogger_tracing::{
+        jdebug, jerror, jinfo, jtrace, jwarn, JloggerBuilder, LevelFilter, LogTimeFormat,
+    },
     std::{
         fmt::Display,
         fs,
@@ -18,7 +21,7 @@ use {
         task::JoinHandle,
         time::{timeout, Duration, Instant},
     },
-    tracelib::{trace_top_dir, writeln_str_file, Kprobe, TraceLog},
+    tracelib::{trace_top_dir, writeln_str_file, JtraceError, Kprobe, TraceLog},
 };
 
 #[derive(Parser, Debug)]
@@ -40,34 +43,41 @@ struct Cli {
     verbose: usize,
 }
 
-async fn wait_to_finish(start: Instant, duration_s: Option<u64>) -> Result<()> {
+async fn wait_to_finish(start: Instant, duration_s: Option<u64>) -> Result<(), JtraceError> {
     let wait_ctrc = signal::ctrl_c();
 
     if let Some(s) = duration_s {
         let to = Duration::from_secs(s) - start.elapsed();
         if !to.is_zero() {
-            timeout(to, wait_ctrc).await??;
+            timeout(to, wait_ctrc)
+                .await
+                .into_report()
+                .change_context(JtraceError::IOError)?
+                .into_report()
+                .change_context(JtraceError::IOError)
+        } else {
+            Ok(())
         }
     } else {
-        signal::ctrl_c().await?;
+        signal::ctrl_c()
+            .await
+            .into_report()
+            .change_context(JtraceError::IOError)
     }
-
-    Ok(())
 }
 
-async fn async_main() -> Result<()> {
+async fn async_main() -> Result<(), JtraceError> {
     let cli = Cli::parse();
 
     let max_level = match cli.verbose {
-        0 => LevelFilter::Info,
-        1 => LevelFilter::Debug,
-        _ => LevelFilter::Trace,
+        0 => LevelFilter::INFO,
+        1 => LevelFilter::DEBUG,
+        _ => LevelFilter::TRACE,
     };
 
     JloggerBuilder::new()
         .max_level(max_level)
         .log_runtime(false)
-        .log_time(false)
         .build();
 
     let mut duration = None;
@@ -76,11 +86,11 @@ async fn async_main() -> Result<()> {
     }
 
     if let Some(p) = cli.pid {
-        info!("Tracing PID {} ...", p);
+        jinfo!("Tracing PID {} ...", p);
     }
 
     if let Some(ref c) = cli.command {
-        info!("Tracing command {} ...", c);
+        jinfo!("Tracing command {} ...", c);
     }
 
     let current_tracer = format!("{}/current_tracer", trace_top_dir().await?);
@@ -90,15 +100,14 @@ async fn async_main() -> Result<()> {
     let fns = vec!["do_sys_open", "do_sys_openat2"];
     let mut probes = vec![];
     for fname in fns {
-        info!("Setup tracing for {}", fname);
-        if let Ok(mut kp) = Kprobe::new(None, fname, None) {
+        jinfo!("Setup tracing for {}", fname);
+        if let Ok(mut kp) = Kprobe::new(None, fname) {
             kp.add_arg("file=+0($arg2):string");
             kp.add_arg("flag=+0($arg3):x32");
             kp.add_arg("mode=+0($arg4):x32");
             kp.build().await?;
-            kp.enable()
-                .await
-                .with_context(|| format!("Failed to enable kprobe: {}", kp.group()))?;
+            kp.enable().await?;
+
             probes.push(kp);
         }
     }
@@ -113,6 +122,7 @@ async fn async_main() -> Result<()> {
     println!("{}", "=".repeat(80));
 
     let start = tokio::time::Instant::now();
+    Kprobe::tracing_start().await?;
     loop {
         tokio::select! {
             //Ok(log) = tlog.trace_print() => print!("{}", log),
@@ -171,10 +181,8 @@ async fn async_main() -> Result<()> {
                  }
             },
             _result = wait_to_finish(start, duration) => {
-                for kp in probes {
-                    let _ = kp.disable();
-                    kp.exit().await;
-                }
+                Kprobe::tracing_stop().await?;
+                Kprobe::clear_kprobe_event().await?;
                 break;
             },
 
@@ -191,7 +199,7 @@ fn main() {
 
     rt.block_on(async {
         if let Err(e) = async_main().await {
-            error!("Error: {}", e);
+            jerror!("Error: {:?}", e);
         }
     });
 

@@ -1,8 +1,6 @@
 #[allow(unused)]
 use {
-    anyhow::{Context, Error, Result},
-    jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
-    log::{debug, error, info, warn, LevelFilter},
+    error_stack::{Report, Result, ResultExt},
     std::{
         ffi::{CStr, CString},
         fmt::Display,
@@ -16,11 +14,14 @@ use {
     },
 };
 
+pub mod error;
 pub mod kprobe;
 pub mod symbolanalyzer;
 pub mod tracelog;
 
-pub use kprobe::Kprobe;
+pub use error::JtraceError;
+use error_stack::IntoReport;
+pub use kprobe::{set_tracing_top, Kprobe};
 pub use symbolanalyzer::ElfFile;
 pub use symbolanalyzer::ExecMap;
 pub use symbolanalyzer::KernelMap;
@@ -29,20 +30,31 @@ pub use symbolanalyzer::NmSymbolType;
 pub use symbolanalyzer::SymbolAnalyzer;
 pub use tracelog::TraceLog;
 
-pub fn writeln_proc(f: &str, s: &str, append: bool) -> Result<()> {
+pub fn writeln_proc(f: &str, s: &str, append: bool) -> Result<(), JtraceError> {
     unsafe {
-        let c_file = CString::new(f)?;
-        let mut mode = CString::new("w")?;
+        let c_file = CString::new(f)
+            .into_report()
+            .change_context(JtraceError::InvalidData)?;
+        let mut mode = CString::new("w").unwrap();
         if append {
-            mode = CString::new("a")?;
+            mode = CString::new("a").unwrap();
         }
         let fp = libc::fopen(c_file.as_ptr(), mode.as_ptr());
 
         if fp.is_null() {
-            return Err(Error::msg(format!("Failed to open {}", f)));
+            return Err(JtraceError::IOError)
+                .into_report()
+                .attach_printable(format!(
+                    "Failed to open {} to write {} ({})",
+                    f,
+                    s,
+                    std::io::Error::last_os_error()
+                ));
         }
 
-        let c_buf = CString::new(s)?;
+        let c_buf = CString::new(s)
+            .into_report()
+            .change_context(JtraceError::InvalidData)?;
         let ret = libc::fwrite(
             c_buf.as_ptr() as *const libc::c_void,
             c_buf.as_bytes().len(),
@@ -51,17 +63,25 @@ pub fn writeln_proc(f: &str, s: &str, append: bool) -> Result<()> {
         ) as i32;
 
         if ret < 0 {
-            return Err(Error::msg(format!("Failed to write {}", f)));
+            return Err(JtraceError::IOError)
+                .into_report()
+                .attach_printable(format!(
+                    "Failed to write {} ({})",
+                    f,
+                    std::io::Error::last_os_error()
+                ));
         }
     }
     Ok(())
 }
 
-pub async fn writeln_str_file(f: &str, s: &str, append: bool) -> Result<()> {
+pub async fn writeln_str_file(f: &str, s: &str, append: bool) -> Result<(), JtraceError> {
     let fp = Path::new(f);
 
     if !fp.is_file() {
-        return Err(Error::msg(format!("File {} not exist.", f)));
+        return Err(JtraceError::InvalidData)
+            .into_report()
+            .attach_printable(format!("File {} not exist.", f));
     }
 
     let file = fs::OpenOptions::new()
@@ -69,7 +89,9 @@ pub async fn writeln_str_file(f: &str, s: &str, append: bool) -> Result<()> {
         .append(append)
         .open(fp)
         .await
-        .with_context(|| format!("Failed to open {}", f))?;
+        .into_report()
+        .change_context(JtraceError::IOError)
+        .attach_printable(format!("Failed to open {}", f))?;
 
     let mut ns = String::from(s);
     if !ns.ends_with('\n') {
@@ -77,7 +99,7 @@ pub async fn writeln_str_file(f: &str, s: &str, append: bool) -> Result<()> {
     }
 
     if ns == "\n" {
-        return writeln_proc(f, s, append);
+        writeln_proc(f, s, append)?;
     }
 
     let mut writer = BufWriter::new(file);
@@ -85,25 +107,36 @@ pub async fn writeln_str_file(f: &str, s: &str, append: bool) -> Result<()> {
     writer
         .write(ns.as_bytes())
         .await
-        .with_context(|| format!("Failed write {} to {}", ns, f))?;
+        .into_report()
+        .change_context(JtraceError::IOError)
+        .attach_printable(format!("Failed write {} to {}", ns, f))?;
 
     writer
         .flush()
         .await
-        .with_context(|| format!("Failed write {} to {}", ns, f))?;
+        .into_report()
+        .change_context(JtraceError::IOError)
+        .attach_printable(format!("Failed write {} to {}", ns, f))?;
 
     Ok(())
 }
 
-pub async fn trace_top_dir() -> Result<String> {
+pub async fn trace_top_dir() -> Result<String, JtraceError> {
     let file = fs::OpenOptions::new()
         .read(true)
         .open(Path::new("/proc/mounts"))
-        .await?;
+        .await
+        .into_report()
+        .change_context(JtraceError::IOError)?;
 
     let mut lines = BufReader::new(file).lines();
 
-    while let Some(l) = &lines.next_line().await? {
+    while let Some(l) = &lines
+        .next_line()
+        .await
+        .into_report()
+        .change_context(JtraceError::IOError)?
+    {
         let entries: Vec<&str> = l.split(' ').collect();
         if entries[0] != "debugfs" {
             continue;
@@ -115,7 +148,9 @@ pub async fn trace_top_dir() -> Result<String> {
         return Ok(tracing_dir);
     }
 
-    Err(Error::msg("trace_pipe not found"))
+    Err(JtraceError::InvalidData)
+        .into_report()
+        .attach_printable("trace_pipe not found")
 }
 
 pub fn bump_memlock_rlimit() {

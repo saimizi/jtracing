@@ -1,19 +1,17 @@
 #[allow(unused)]
 use {
-    error_stack::{IntoReport, Result, ResultExt},
-    jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
-    log::{debug, error, info, warn, LevelFilter},
-    std::error::Error,
-};
-
-use {
     clap::Parser,
+    error_stack::{IntoReport, Result, ResultExt},
+    jlogger_tracing::{
+        jdebug, jerror, jinfo, jtrace, jwarn, JloggerBuilder, LevelFilter, LogTimeFormat,
+    },
     libbpf_rs::{
         set_print,
         skel::{OpenSkel, SkelBuilder},
         MapFlags, PrintLevel,
     },
     plain::Plain,
+    std::error::Error,
     std::{
         collections::HashMap,
         sync::{
@@ -58,9 +56,9 @@ unsafe impl Plain for SwapEvent {}
 
 fn print_to_log(level: PrintLevel, msg: String) {
     match level {
-        PrintLevel::Debug => log::trace!("{}", msg.trim_matches('\n')),
-        PrintLevel::Info => log::info!("{}", msg.trim_matches('\n')),
-        PrintLevel::Warn => log::warn!("{}", msg.trim_matches('\n')),
+        PrintLevel::Debug => jtrace!("{}", msg.trim_matches('\n')),
+        PrintLevel::Info => jinfo!("{}", msg.trim_matches('\n')),
+        PrintLevel::Warn => jwarn!("{}", msg.trim_matches('\n')),
     }
 }
 
@@ -195,15 +193,14 @@ fn process_events(
 fn main() -> Result<(), EGLSwapBuffersError> {
     let cli = Cli::parse();
     let max_level = match cli.verbose {
-        0 => log::LevelFilter::Info,
-        1 => log::LevelFilter::Debug,
-        2 => log::LevelFilter::Trace,
-        _ => log::LevelFilter::Off,
+        0 => LevelFilter::INFO,
+        1 => LevelFilter::DEBUG,
+        2 => LevelFilter::TRACE,
+        _ => LevelFilter::OFF,
     };
 
     JloggerBuilder::new()
         .max_level(max_level)
-        .log_time(false)
         .log_runtime(false)
         .build();
 
