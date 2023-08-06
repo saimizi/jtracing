@@ -87,8 +87,10 @@ async fn async_main() -> Result<()> {
 
     writeln_str_file(&current_tracer, "nop", false).await?;
 
-    let fns = vec!["do_sys_open"];
+    let fns = vec!["do_sys_open", "do_sys_openat2"];
+    let mut probes = vec![];
     for fname in fns {
+        info!("Setup tracing for {}", fname);
         if let Ok(mut kp) = Kprobe::new(None, fname, None) {
             kp.add_arg("file=+0($arg2):string");
             kp.add_arg("flag=+0($arg3):x32");
@@ -97,90 +99,91 @@ async fn async_main() -> Result<()> {
             kp.enable()
                 .await
                 .with_context(|| format!("Failed to enable kprobe: {}", kp.group()))?;
-
-            let mut tlog = TraceLog::new().await?;
-
-            println!();
-            println!(
-                "{:<12} {:15} {:<8} {:<30}",
-                "TimeStamp", "Task", "PID", "OpenedFile"
-            );
-            println!("{}", "=".repeat(80));
-
-            let start = tokio::time::Instant::now();
-            loop {
-                tokio::select! {
-                    //Ok(log) = tlog.trace_print() => print!("{}", log),
-                     result = tlog.trace_fields() => {
-                         match result {
-                            Ok((task, pid, _cpu, _flag, ts, msg)) => {
-                                #[allow(clippy::never_loop)]
-                                loop {
-                                    let mut fname = String::new();
-                                    let mut flag = String::new();
-                                    let mut mode = String::new();
-                                    let mut iter = msg.split(' ').collect::<Vec<&str>>().into_iter();
-                                    iter.next();
-                                    iter.next();
-
-                                    if let Some(s) = iter.next() {
-                                        fname.push_str(s);
-                                    } else {
-                                        break;
-                                    }
-
-                                    if let Some(s) = iter.next() {
-                                        flag.push_str(s);
-                                    } else {
-                                        break;
-                                    }
-
-                                    if let Some(s) = iter.next() {
-                                        mode.push_str(s);
-                                    } else {
-                                        break;
-                                    }
-
-                                    if let Some(tpid) = cli.pid {
-                                        if tpid != pid {
-                                            break;
-                                        }
-                                    }
-
-                                    if let Some(ref c) = cli.command {
-                                        if task.len() >= 15 {
-                                            if !c.starts_with(&task) {
-                                                break;
-                                            }
-                                        } else if c != &task {
-                                                break;
-                                        }
-                                    }
-
-                                    println!("{:<12} {:15} {:<8} {:<30}",ts, task, pid, fname);
-                                    break;
-                                }
-
-                            },
-                            Err(e) => eprintln!("Error: {}", e),
-                         }
-                    },
-                    _result = wait_to_finish(start, duration) => {
-                        let _ = kp.disable();
-                        kp.exit().await;
-                        break;
-                    },
-
-                }
-            }
-
-            tlog.terminate().await;
-
-            return Ok(());
+            probes.push(kp);
         }
     }
 
-    Err(Error::msg("Failed to add a kprobe for execve."))
+    let mut tlog = TraceLog::new().await?;
+
+    println!();
+    println!(
+        "{:<12} {:15} {:<8} {:<30}",
+        "TimeStamp", "Task", "PID", "OpenedFile"
+    );
+    println!("{}", "=".repeat(80));
+
+    let start = tokio::time::Instant::now();
+    loop {
+        tokio::select! {
+            //Ok(log) = tlog.trace_print() => print!("{}", log),
+             result = tlog.trace_fields() => {
+                 match result {
+                    Ok((task, pid, _cpu, _flag, ts, msg)) => {
+                        #[allow(clippy::never_loop)]
+                        loop {
+                            let mut fname = String::new();
+                            let mut flag = String::new();
+                            let mut mode = String::new();
+                            let mut iter = msg.split(' ').collect::<Vec<&str>>().into_iter();
+                            iter.next();
+                            iter.next();
+
+                            if let Some(s) = iter.next() {
+                                fname.push_str(s);
+                            } else {
+                                break;
+                            }
+
+                            if let Some(s) = iter.next() {
+                                flag.push_str(s);
+                            } else {
+                                break;
+                            }
+
+                            if let Some(s) = iter.next() {
+                                mode.push_str(s);
+                            } else {
+                                break;
+                            }
+
+                            if let Some(tpid) = cli.pid {
+                                if tpid != pid {
+                                    break;
+                                }
+                            }
+
+                            if let Some(ref c) = cli.command {
+                                if task.len() >= 15 {
+                                    if !c.starts_with(&task) {
+                                        break;
+                                    }
+                                } else if c != &task {
+                                        break;
+                                }
+                            }
+
+                            println!("{:<12} {:15} {:<8} {:<30}",ts, task, pid, fname);
+                            break;
+                        }
+
+                    },
+                    Err(e) => eprintln!("Error: {}", e),
+                 }
+            },
+            _result = wait_to_finish(start, duration) => {
+                for kp in probes {
+                    let _ = kp.disable();
+                    kp.exit().await;
+                }
+                break;
+            },
+
+        }
+    }
+
+    tlog.terminate().await;
+
+    return Ok(());
 }
 
 fn main() {
