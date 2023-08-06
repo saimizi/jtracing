@@ -191,7 +191,7 @@ async fn async_main() -> Result<(), JtraceError> {
 
     tlog.terminate().await;
 
-    return Ok(());
+    Ok(())
 }
 
 fn main() {

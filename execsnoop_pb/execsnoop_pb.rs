@@ -195,10 +195,8 @@ fn main() -> Result<(), JtraceError> {
             let args_str = args[0..event.args_count as usize].join(" ");
             let filename = unsafe { bytes_to_string(event.filename.as_ptr()) };
 
-            if args.is_empty() {
-                if !filename.is_empty() {
-                    args.push(&filename);
-                }
+            if args.is_empty() && !filename.is_empty() {
+                args.push(&filename);
             }
 
             let fork_info = {

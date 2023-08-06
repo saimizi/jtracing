@@ -165,7 +165,7 @@ impl KernelMap {
 
             let addr_str = entries
                 .next()
-                .ok_or_else(|| SymbolAnalyzerError::InvalidSymbolFile)
+                .ok_or(SymbolAnalyzerError::InvalidSymbolFile)
                 .into_report()
                 .attach_printable(format!("No address found in line: `{}`", line))?
                 .trim();
@@ -173,7 +173,7 @@ impl KernelMap {
 
             let t = entries
                 .next()
-                .ok_or_else(|| SymbolAnalyzerError::InvalidSymbolFile)
+                .ok_or(SymbolAnalyzerError::InvalidSymbolFile)
                 .into_report()
                 .attach_printable(format!("No symbol type found in line: `{}`", line))?
                 .trim();
@@ -207,7 +207,7 @@ impl KernelMap {
             let name = String::from(
                 entries
                     .next()
-                    .ok_or_else(|| SymbolAnalyzerError::InvalidSymbolFile)
+                    .ok_or(SymbolAnalyzerError::InvalidSymbolFile)
                     .into_report()
                     .attach_printable(format!("No name found in line: `{}`", line))?
                     .trim(),
@@ -231,8 +231,8 @@ impl KernelMap {
         kallsyms.sort_by(|a, b| b.addr().partial_cmp(&a.addr()).unwrap());
 
         let mut addr = u64::max_value();
-        for i in 0..kallsyms.len() {
-            let v = &mut kallsyms[i];
+
+        for v in kallsyms.iter_mut() {
             if addr >= v.addr() {
                 v.set_len(addr - v.addr())
             }
@@ -359,12 +359,12 @@ impl ExecMap {
             }
         }
 
-        return Err(SymbolAnalyzerError::InvalidAddress)
+        Err(SymbolAnalyzerError::InvalidAddress)
             .into_report()
             .attach_printable(format!(
                 "Invalid addr {:x} for pid {}. Available range: {}",
                 addr, self.pid, keys
-            ));
+            ))
     }
 }
 
@@ -595,7 +595,7 @@ impl ElfFile {
         let entry = self
             .sym_addr
             .get(sym)
-            .ok_or_else(|| SymbolAnalyzerError::SymbolNotFound)
+            .ok_or(SymbolAnalyzerError::SymbolNotFound)
             .into_report()
             .attach_printable(format!("Symbol {} Not Found.", sym))?;
         Ok(entry.start())

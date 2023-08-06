@@ -169,7 +169,11 @@ pub fn bump_memlock_rlimit() {
 /// This function might dereference a raw pointer.
 pub unsafe fn bytes_to_string(b: *const i8) -> String {
     let ret = String::from("INVALID");
-    if let Ok(s) = CStr::from_ptr(std::mem::transmute(b)).to_str() {
+
+    #[cfg(target_arch = "aarch64")]
+    let b = std::mem::transmute(b);
+
+    if let Ok(s) = CStr::from_ptr(b).to_str() {
         return s.to_owned();
     }
     ret

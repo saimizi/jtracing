@@ -532,7 +532,7 @@ fn main() -> Result<(), FuncCountError> {
             .change_context(FuncCountError::Unexpected)
             .attach_printable("Failed to load kernel map")?;
 
-        let tracepoints: Vec<&str> = include_str!("tracepoints").split("\n").collect();
+        let tracepoints: Vec<&str> = include_str!("tracepoints").split('\n').collect();
         let mut sym_to_trace = &cli.args;
         let mut sym_to_trace_vec = vec![];
 
@@ -588,7 +588,7 @@ fn main() -> Result<(), FuncCountError> {
 
                     for &tp in &tracepoints {
                         if re.is_match(tp) {
-                            let tmp: Vec<&str> = tp.split(":").collect();
+                            let tmp: Vec<&str> = tp.split(':').collect();
                             tps.push((tmp[0], tmp[1]));
                         }
                     }
@@ -779,7 +779,7 @@ fn main() -> Result<(), FuncCountError> {
         }
 
         let mut timeout = if cli.duration > 0 {
-            (cli.duration * 1000) as u64
+            cli.duration * 1000
         } else {
             100
         };

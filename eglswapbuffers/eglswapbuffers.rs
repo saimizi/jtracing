@@ -263,7 +263,7 @@ fn main() -> Result<(), EGLSwapBuffersError> {
         .attach_uprobe(false, -1, file.clone(), offset)
         .into_report()
         .change_context(EGLSwapBuffersError::BPFError)
-        .attach_printable(format!("Failed to attach eglSwapBuffers()."))?;
+        .attach_printable("Failed to attach eglSwapBuffers().".to_string())?;
 
     links.push(link);
 
@@ -299,6 +299,6 @@ fn main() -> Result<(), EGLSwapBuffersError> {
 
     println!("Tracing finished, Processing data...");
 
-    process_events(&cli, &probe, &mut skel.maps())?;
+    process_events(&cli, probe, &mut skel.maps())?;
     Ok(())
 }

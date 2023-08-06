@@ -67,7 +67,7 @@ fn main() {
             .source(&skle_c)
             .debug(true)
             .clang_args(&clang_args)
-            .build_and_generate(&skel)
+            .build_and_generate(skel)
             .expect("bpf compilation failed");
         println!("cargo:rerun-if-changed={}", &skle_c);
         println!("cargo:rerun-if-changed={}/{}.rs", app, app);

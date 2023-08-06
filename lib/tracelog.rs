@@ -79,7 +79,7 @@ impl TraceLog {
         self.receiver
             .recv()
             .await
-            .ok_or_else(|| JtraceError::IOError)
+            .ok_or(JtraceError::IOError)
             .into_report()
             .attach_printable("No data")
     }
@@ -95,7 +95,7 @@ impl TraceLog {
             .receiver
             .recv()
             .await
-            .ok_or_else(|| JtraceError::IOError)
+            .ok_or(JtraceError::IOError)
             .into_report()
             .attach_printable("Trace terminated")?;
 
@@ -103,7 +103,7 @@ impl TraceLog {
         let err_log = format!("Invalid log string : {}", &log);
         let mut splitter = to_process
             .find('[')
-            .ok_or_else(|| JtraceError::InvalidData)
+            .ok_or(JtraceError::InvalidData)
             .into_report()
             .attach_printable(err_log.clone())?;
 
@@ -112,7 +112,7 @@ impl TraceLog {
             jdebug!("task_pid_str: {}", task_pid_str);
             let splitter = task_pid_str
                 .rfind('-')
-                .ok_or_else(|| JtraceError::InvalidData)
+                .ok_or(JtraceError::InvalidData)
                 .into_report()
                 .attach_printable(err_log.clone())?;
             task = String::from(task_pid_str[..splitter].trim());
@@ -128,7 +128,7 @@ impl TraceLog {
         jdebug!("log str: {}", to_process);
         splitter = to_process
             .find("] ")
-            .ok_or_else(|| JtraceError::InvalidData)
+            .ok_or(JtraceError::InvalidData)
             .into_report()
             .attach_printable(err_log.clone())?;
         let cpu = to_process[..splitter]
@@ -140,7 +140,7 @@ impl TraceLog {
         to_process = &to_process[splitter + 2..];
         splitter = to_process
             .find(' ')
-            .ok_or_else(|| JtraceError::InvalidData)
+            .ok_or(JtraceError::InvalidData)
             .into_report()
             .attach_printable(err_log.clone())?;
         let flag = String::from(to_process[..splitter].trim());
@@ -148,7 +148,7 @@ impl TraceLog {
         to_process = &to_process[splitter + 1..];
         splitter = to_process
             .find(':')
-            .ok_or_else(|| JtraceError::InvalidData)
+            .ok_or(JtraceError::InvalidData)
             .into_report()
             .attach_printable(err_log.clone())?;
         let ts = to_process[..splitter]
@@ -156,7 +156,7 @@ impl TraceLog {
             .parse()
             .into_report()
             .change_context(JtraceError::InvalidData)
-            .attach_printable(err_log.clone())?;
+            .attach_printable(err_log)?;
 
         to_process = &to_process[splitter + 1..];
         msg.push_str(to_process.trim());
