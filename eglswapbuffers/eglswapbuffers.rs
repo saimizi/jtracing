@@ -272,7 +272,7 @@ fn main() -> Result<(), EGLSwapBuffersError> {
     let r = running.clone();
 
     ctrlc::set_handler(move || {
-        r.store(false, Ordering::SeqCst);
+        r.store(false, Ordering::Release);
     })
     .into_report()
     .change_context(EGLSwapBuffersError::Unexpected)?;
@@ -286,7 +286,7 @@ fn main() -> Result<(), EGLSwapBuffersError> {
         println!("Tracing {}:{} ... Type Ctrl-C to stop.", file, probe);
     }
 
-    while running.load(Ordering::SeqCst) {
+    while running.load(Ordering::Acquire) {
         std::thread::sleep(Duration::from_millis(100));
 
         if cli.duration > 0 {

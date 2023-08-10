@@ -305,12 +305,12 @@ fn main() -> Result<(), JtraceError> {
     let r = running.clone();
 
     ctrlc::set_handler(move || {
-        r.store(false, Ordering::SeqCst);
+        r.store(false, Ordering::Release);
     })
     .into_report()
     .change_context(JtraceError::IOError)?;
 
-    while running.load(Ordering::SeqCst) {
+    while running.load(Ordering::Acquire) {
         // ctrl-c will fail perfbuf.poll()
         let _ = perfbuf.poll(std::time::Duration::from_millis(100));
     }

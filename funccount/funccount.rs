@@ -763,7 +763,7 @@ fn main() -> Result<(), FuncCountError> {
         let r = running.clone();
 
         ctrlc::set_handler(move || {
-            r.store(false, Ordering::SeqCst);
+            r.store(false, Ordering::Release);
         })
         .into_report()
         .change_context(FuncCountError::Unexpected)?;
@@ -784,7 +784,7 @@ fn main() -> Result<(), FuncCountError> {
             100
         };
 
-        while running.load(Ordering::SeqCst) {
+        while running.load(Ordering::Acquire) {
             let _ = perfbuf.poll(std::time::Duration::from_millis(timeout));
 
             if cli.duration > 0 {
