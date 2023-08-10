@@ -416,16 +416,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4217ad341ebadf8d8e724e264f13e593e0648f5b3e94b3896a5df283be015ecc"
 
 [[package]]
-name = "jlogger"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e121c256203e18a94f28774d83cc9e367667230f83900261da88e9695a29559f"
-dependencies = [
- "chrono",
- "log",
-]
-
-[[package]]
 name = "jlogger-tracing"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -456,15 +446,14 @@ dependencies = [
  "ctrlc",
  "error-stack",
  "hex",
- "jlogger",
  "jlogger-tracing",
  "libbpf-cargo",
  "libbpf-rs",
  "libc",
- "log",
  "memmap",
  "object",
  "once_cell",
+ "perf-event-open-sys",
  "plain",
  "rand",
  "regex",
@@ -759,6 +748,15 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-sys",
+]
+
+[[package]]
+name = "perf-event-open-sys"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c44fb1c7651a45a3652c4afc6e754e40b3d6e6556f1487e2b230bfc4f33c2a8"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

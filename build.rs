@@ -1,6 +1,8 @@
 #[allow(unused)]
 use {
-    jlogger::{jdebug, jerror, jinfo, jwarn, JloggerBuilder},
+    jlogger_tracing::{
+        jdebug, jerror, jinfo, jtrace, jwarn, JloggerBuilder, LevelFilter, LogTimeFormat,
+    },
     std::{
         env,
         fs::{canonicalize, create_dir_all, remove_file},
@@ -14,13 +16,18 @@ use libbpf_cargo::SkeletonBuilder;
 
 fn main() {
     JloggerBuilder::new()
-        .max_level(log::LevelFilter::Debug)
-        .log_file("/tmp/jtracing.log")
+        .max_level(LevelFilter::DEBUG)
+        .log_file(Some(("/tmp/jtracing.log", false)))
         .log_console(false)
-        .log_time(false)
         .build();
 
-    let applications = vec!["execsnoop_pb", "execsnoop_rb", "funccount", "eglswapbuffers"];
+    let applications = vec![
+        "execsnoop_pb",
+        "execsnoop_rb",
+        "funccount",
+        "eglswapbuffers",
+        "profile",
+    ];
     let out_dir = env::var("OUT_DIR").unwrap();
 
     jinfo!("{}", out_dir);
