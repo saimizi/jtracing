@@ -150,23 +150,23 @@ fn main() -> Result<(), JtraceError> {
 
         let obj = skel.object_mut();
         let prog = obj.prog_mut("do_perf_event").unwrap();
-        let mut attrs = perf_sys::bindings::perf_event_attr::default();
-        attrs.type_ = perf_sys::bindings::PERF_TYPE_HARDWARE;
-        attrs.config = perf_sys::bindings::PERF_COUNT_HW_CPU_CYCLES as u64;
-        attrs.sample_type = perf_sys::bindings::PERF_SAMPLE_RAW;
+        let mut attrs = perf_sys::bindings::perf_event_attr {
+            type_: perf_sys::bindings::PERF_TYPE_HARDWARE,
+            config: perf_sys::bindings::PERF_COUNT_HW_CPU_CYCLES as u64,
+            sample_type: perf_sys::bindings::PERF_SAMPLE_RAW,
+            ..Default::default()
+        };
+
         attrs.__bindgen_anon_1.sample_freq = cli.frequency;
         attrs.set_freq(1);
 
         let mut links = vec![];
 
         let pid = cli.pid.map(|a| a as i32).unwrap_or(-1);
-        let mut target_cpu: Vec<i32> = (0..cpu_num).into_iter().map(|a| a as i32).collect();
+        let mut target_cpu: Vec<i32> = (0..cpu_num).map(|a| a as i32).collect();
 
         if let Some(c) = cli.cpu {
-            target_cpu = target_cpu
-                .into_iter()
-                .filter(|&a| c.iter().find(|&&b| a == b as i32).is_some())
-                .collect();
+            target_cpu.retain(|&a| c.iter().any(|&b| a == b as i32));
         }
 
         if pid == -1 {
@@ -190,7 +190,7 @@ fn main() -> Result<(), JtraceError> {
                 perf_sys::perf_event_open(
                     &mut attrs,
                     pid,
-                    cpu as i32,
+                    cpu,
                     -1,
                     perf_sys::bindings::PERF_FLAG_FD_CLOEXEC as u64,
                 )
@@ -218,7 +218,7 @@ fn main() -> Result<(), JtraceError> {
 
         let timeout = cli
             .duration
-            .map(|d| Duration::from_secs(d))
+            .map(Duration::from_secs)
             .unwrap_or_else(|| Duration::from_secs(u64::MAX));
 
         let start = Instant::now();
@@ -282,9 +282,10 @@ pub fn process_data(
 
             if kstack_sz > 0 {
                 //println!("  Kernel Stack ({}):", kstack_sz);
-                for f in 0..kstack_sz as usize {
-                    let addr = kstack[f];
-                    let p_name = symanalyzer.ksymbol(addr).unwrap_or("[unknown]".to_string());
+                for addr in kstack.iter().take(kstack_sz) {
+                    let p_name = symanalyzer
+                        .ksymbol(*addr)
+                        .unwrap_or("[unknown]".to_string());
                     println!("    {:x}  {}", addr, p_name);
                 }
             }
@@ -295,11 +296,9 @@ pub fn process_data(
 
             if ustack_sz > 0 {
                 //println!("  User Stack ({}):", ustack_sz);
-                for f in 0..ustack_sz as usize {
-                    let addr = ustack[f];
-
+                for addr in ustack.iter().take(ustack_sz) {
                     let (offset, p_name, file) = if let Some(em) = map.borrow_mut().get_mut(&pid) {
-                        em.symbol(addr).unwrap_or((
+                        em.symbol(*addr).unwrap_or((
                             0,
                             "[unknown]".to_string(),
                             "[unknown]".to_string(),
@@ -328,11 +327,10 @@ pub fn process_data(
                 fold_result.push_str("[Missed User Stack]");
                 fold_result.push(';');
             } else {
-                for f in 0..ustack_sz as usize {
-                    let addr = ustack[f];
+                for addr in ustack.iter().take(ustack_sz) {
                     let (_offset, p_name, _file) = if let Some(em) = map.borrow_mut().get_mut(&pid)
                     {
-                        em.symbol(addr).unwrap_or((
+                        em.symbol(*addr).unwrap_or((
                             0,
                             "[unknown]".to_string(),
                             "[unknown]".to_string(),
@@ -350,9 +348,10 @@ pub fn process_data(
                 fold_result.push_str("[Missed Kernel Stack]");
                 fold_result.push(';');
             } else {
-                for f in 0..kstack_sz as usize {
-                    let addr = kstack[f];
-                    let p_name = symanalyzer.ksymbol(addr).unwrap_or("[unknown]".to_string());
+                for addr in kstack.iter().take(kstack_sz) {
+                    let p_name = symanalyzer
+                        .ksymbol(*addr)
+                        .unwrap_or("[unknown]".to_string());
                     fold_result.push_str(&p_name);
                     fold_result.push(';');
                 }
