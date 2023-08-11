@@ -43,8 +43,8 @@ struct {
 
 struct event _event = {};
 
-int trace_idle = 0;
-int target_pid = -1;
+int skip_idle = -1;
+int skip_self = -1;
 
 SEC("perf_event")
 int do_perf_event(struct bpf_perf_event_data *ctx)
@@ -57,12 +57,12 @@ int do_perf_event(struct bpf_perf_event_data *ctx)
 	int cpu_id = bpf_get_smp_processor_id();
 	long ret;
 
-	if (!trace_idle && pid == 0)
+	if (skip_idle == pid)
 		return 0;
 
-	if (target_pid >= 0 &&
-		target_pid != tgid && target_pid != pid)
+	if (skip_self == pid || skip_self == tgid)
 		return 0;
+
 
 	int zero = 0;
 	struct event *e = bpf_map_lookup_elem(&heap, &zero);

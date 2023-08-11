@@ -16,12 +16,15 @@ use {
     std::{
         cell::RefCell,
         collections::HashMap,
+        fs,
         io::{self, Write},
+        process,
         rc::Rc,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
         },
+        time::{Duration, Instant},
     },
     tracelib::{bump_memlock_rlimit, bytes_to_string, ExecMap, JtraceError, SymbolAnalyzer},
 };
@@ -40,13 +43,37 @@ fn print_to_log(level: PrintLevel, msg: String) {
 
 #[derive(Parser, Debug)]
 struct Cli {
-    ///Trace process lives at least <DURATION> ms.
-    #[clap(short, default_value_t = 0_u64)]
-    duration: u64,
+    ///Trace internal
+    #[clap(short, long)]
+    duration: Option<u64>,
 
-    ///Trace process lives at least <DURATION> ms.
+    ///Target process id to be traced
     #[clap(short, long)]
     pid: Option<u32>,
+
+    ///Id of CPU to be traced
+    #[clap(short, long)]
+    cpu: Option<Vec<u32>>,
+
+    ///Trace profile program self.
+    #[clap(long)]
+    trace_self: bool,
+
+    ///Skip tracing idle task (PID==0)
+    #[clap(long)]
+    trace_idle: bool,
+
+    ///Profiling frequency
+    #[clap(short = 'F', long, default_value_t = 99_u64)]
+    frequency: u64,
+
+    ///Fold format, one line per stack for flame graphs
+    #[clap(short, long)]
+    fold: bool,
+
+    ///Log file to store fold format output.
+    #[clap(long, default_value_t=String::from("profile.fold"))]
+    fold_file: String,
 
     ///Verbose
     #[clap(short, long, parse(from_occurrences))]
@@ -59,12 +86,9 @@ unsafe impl Plain for Event {}
 fn main() -> Result<(), JtraceError> {
     let cli = Cli::parse();
     let max_level = match cli.verbose {
-        0 => LevelFilter::OFF,
-        1 => LevelFilter::ERROR,
-        2 => LevelFilter::WARN,
-        3 => LevelFilter::INFO,
-        4 => LevelFilter::DEBUG,
-        _ => LevelFilter::OFF,
+        0 => LevelFilter::INFO,
+        1 => LevelFilter::DEBUG,
+        _ => LevelFilter::TRACE,
     };
 
     JloggerBuilder::new()
@@ -75,8 +99,6 @@ fn main() -> Result<(), JtraceError> {
     bump_memlock_rlimit();
 
     let cpu_num = std::thread::available_parallelism().unwrap().get();
-    jinfo!(cpu_num = cpu_num);
-
     let skel_builder = ProfileSkelBuilder::default();
     set_print(Some((PrintLevel::Debug, print_to_log)));
 
@@ -86,8 +108,13 @@ fn main() -> Result<(), JtraceError> {
         .change_context(JtraceError::IOError)
         .attach_printable("Failed to open bpf.")?;
 
-    open_skel.bss().trace_idle = 0;
-    open_skel.data().target_pid = cli.pid.map(|a| a as i32).unwrap_or(-1);
+    if !cli.trace_idle {
+        open_skel.data().skip_idle = 0;
+    }
+
+    if !cli.trace_self {
+        open_skel.data().skip_self = process::id() as i32;
+    }
 
     let mut skel = open_skel
         .load()
@@ -127,22 +154,52 @@ fn main() -> Result<(), JtraceError> {
         attrs.type_ = perf_sys::bindings::PERF_TYPE_HARDWARE;
         attrs.config = perf_sys::bindings::PERF_COUNT_HW_CPU_CYCLES as u64;
         attrs.sample_type = perf_sys::bindings::PERF_SAMPLE_RAW;
-        attrs.__bindgen_anon_1.sample_freq = 49;
+        attrs.__bindgen_anon_1.sample_freq = cli.frequency;
         attrs.set_freq(1);
 
         let mut links = vec![];
 
-        for cpu in 0..cpu_num {
+        let pid = cli.pid.map(|a| a as i32).unwrap_or(-1);
+        let mut target_cpu: Vec<i32> = (0..cpu_num).into_iter().map(|a| a as i32).collect();
+
+        if let Some(c) = cli.cpu {
+            target_cpu = target_cpu
+                .into_iter()
+                .filter(|&a| c.iter().find(|&&b| a == b as i32).is_some())
+                .collect();
+        }
+
+        if pid == -1 {
+            jinfo!(
+                "Sampling ALL processes on CPU {:?} at {}Hz",
+                target_cpu,
+                cli.frequency
+            );
+        } else {
+            jinfo!(
+                "Sampling pid {} on CPU {:?} at {}Hz",
+                pid,
+                target_cpu,
+                cli.frequency
+            );
+        }
+
+        let mut group_fd = -1;
+        for cpu in target_cpu {
             let pfd = unsafe {
                 perf_sys::perf_event_open(
                     &mut attrs,
-                    -1,
+                    pid,
                     cpu as i32,
                     -1,
                     perf_sys::bindings::PERF_FLAG_FD_CLOEXEC as u64,
                 )
             };
             assert!(pfd > 0);
+
+            if group_fd == -1 {
+                group_fd = pfd;
+            }
 
             links.push(
                 prog.attach_perf_event(pfd)
@@ -159,8 +216,17 @@ fn main() -> Result<(), JtraceError> {
         .into_report()
         .change_context(JtraceError::IOError)?;
 
+        let timeout = cli
+            .duration
+            .map(|d| Duration::from_secs(d))
+            .unwrap_or_else(|| Duration::from_secs(u64::MAX));
+
+        let start = Instant::now();
         while running.load(Ordering::Acquire) {
-            let _ = perfbuf.poll(std::time::Duration::from_secs(u64::MAX));
+            let _ = perfbuf.poll(timeout);
+            if start.elapsed() >= timeout {
+                break;
+            }
         }
 
         perfbuf.consume().unwrap();
@@ -169,19 +235,35 @@ fn main() -> Result<(), JtraceError> {
         }
     }
 
-    println!();
-    jinfo!("Processing data...");
+    if !events.borrow().is_empty() {
+        println!();
+        jinfo!("Processing data...");
+        process_data(events, maps, cli.fold, &cli.fold_file)?;
+    } else {
+        jinfo!("No data captured.");
+    }
 
-    process_data(events, maps)
+    Ok(())
 }
 
 pub fn process_data(
     events: Rc<RefCell<Vec<Event>>>,
     map: Rc<RefCell<HashMap<u32, ExecMap>>>,
+    fold: bool,
+    fold_file_name: &str,
 ) -> Result<(), JtraceError> {
     let symanalyzer = SymbolAnalyzer::new(None).change_context(JtraceError::SymbolAnalyzerError)?;
 
     let mut no = 0;
+    let total = events.borrow().len();
+    let _ = fs::remove_file(fold_file_name);
+    let mut fold_file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .read(true)
+        .open(fold_file_name)
+        .into_report()
+        .change_context(JtraceError::IOError)?;
 
     for event in events.borrow_mut().iter_mut() {
         let comm = unsafe { bytes_to_string(event.comm.as_ptr()) };
@@ -193,40 +275,106 @@ pub fn process_data(
         let ustack = &mut event.ustack[0..ustack_sz];
         let kstack = &mut event.kstack[0..kstack_sz];
 
-        no += 1;
+        if !fold {
+            no += 1;
 
-        println!("{:3} CPU:{} Comm:{} PID:{} TID:{}", no, cpu, comm, pid, tid);
+            println!("{:3} CPU:{} Comm:{} PID:{} TID:{}", no, cpu, comm, pid, tid);
 
-        if kstack_sz > 0 {
-            //println!("  Kernel Stack ({}):", kstack_sz);
-            for f in 0..kstack_sz as usize {
-                let addr = kstack[f];
-                let p_name = symanalyzer.ksymbol(addr).unwrap_or("Unknown".to_string());
-                println!("    {:x}  {}", addr, p_name);
+            if kstack_sz > 0 {
+                //println!("  Kernel Stack ({}):", kstack_sz);
+                for f in 0..kstack_sz as usize {
+                    let addr = kstack[f];
+                    let p_name = symanalyzer.ksymbol(addr).unwrap_or("[unknown]".to_string());
+                    println!("    {:x}  {}", addr, p_name);
+                }
             }
-        }
 
-        if kstack_sz > 0 && ustack_sz > 0 {
-            println!("    ----");
-        }
-
-        if ustack_sz > 0 {
-            //println!("  User Stack ({}):", ustack_sz);
-            for f in 0..ustack_sz as usize {
-                let addr = ustack[f];
-
-                let (offset, p_name, file) = if let Some(em) = map.borrow_mut().get_mut(&pid) {
-                    em.symbol(addr)
-                        .unwrap_or((0, "Unknown".to_string(), "Unknown".to_string()))
-                } else {
-                    (0, "Unknown".to_string(), "Unknown".to_string())
-                };
-
-                println!("    {:x}(+{})  {} {}", addr, offset, p_name, file);
+            if kstack_sz > 0 && ustack_sz > 0 {
+                println!("    ----");
             }
-        }
 
+            if ustack_sz > 0 {
+                //println!("  User Stack ({}):", ustack_sz);
+                for f in 0..ustack_sz as usize {
+                    let addr = ustack[f];
+
+                    let (offset, p_name, file) = if let Some(em) = map.borrow_mut().get_mut(&pid) {
+                        em.symbol(addr).unwrap_or((
+                            0,
+                            "[unknown]".to_string(),
+                            "[unknown]".to_string(),
+                        ))
+                    } else {
+                        (0, "[unknown]".to_string(), "[unknown]".to_string())
+                    };
+
+                    println!("    {:x}(+{})  {} {}", addr, offset, p_name, file);
+                }
+            }
+
+            println!();
+        } else {
+            ustack.reverse();
+            kstack.reverse();
+
+            no += 1;
+            print!("  Write {}/{} records to {}\r", no, total, fold_file_name);
+            io::stdout().flush().unwrap();
+
+            let mut fold_result = String::new();
+            fold_result.push_str(&comm);
+            fold_result.push(';');
+            if ustack_sz == 0 {
+                fold_result.push_str("[Missed User Stack]");
+                fold_result.push(';');
+            } else {
+                for f in 0..ustack_sz as usize {
+                    let addr = ustack[f];
+                    let (_offset, p_name, _file) = if let Some(em) = map.borrow_mut().get_mut(&pid)
+                    {
+                        em.symbol(addr).unwrap_or((
+                            0,
+                            "[unknown]".to_string(),
+                            "[unknown]".to_string(),
+                        ))
+                    } else {
+                        (0, "[unknown]".to_string(), "[unknown]".to_string())
+                    };
+
+                    fold_result.push_str(&p_name);
+                    fold_result.push(';');
+                }
+            }
+
+            if kstack_sz == 0 {
+                fold_result.push_str("[Missed Kernel Stack]");
+                fold_result.push(';');
+            } else {
+                for f in 0..kstack_sz as usize {
+                    let addr = kstack[f];
+                    let p_name = symanalyzer.ksymbol(addr).unwrap_or("[unknown]".to_string());
+                    fold_result.push_str(&p_name);
+                    fold_result.push(';');
+                }
+            }
+
+            fold_result = fold_result.trim_end_matches(';').to_string();
+            fold_result.push_str(&format!(" {}\n", pid));
+
+            fold_file
+                .write(fold_result.as_bytes())
+                .into_report()
+                .change_context(JtraceError::IOError)?;
+            fold_file
+                .flush()
+                .into_report()
+                .change_context(JtraceError::IOError)?;
+        }
+    }
+
+    if fold {
         println!();
+        jinfo!("Written to {}", fold_file_name);
     }
     Ok(())
 }
