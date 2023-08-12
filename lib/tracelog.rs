@@ -47,7 +47,7 @@ async fn read_oneline(
 
 impl TraceLog {
     pub async fn new() -> Result<Self, JtraceError> {
-        let mut trace_pipe = trace_top_dir().await?;
+        let mut trace_pipe = trace_top_dir()?.to_string();
         trace_pipe.push_str("/trace_pipe");
 
         let trace_pipe_path = Path::new(&trace_pipe);

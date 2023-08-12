@@ -93,9 +93,9 @@ async fn async_main() -> Result<(), JtraceError> {
         jinfo!("Tracing command {} ...", c);
     }
 
-    let current_tracer = format!("{}/current_tracer", trace_top_dir().await?);
+    let current_tracer = format!("{}/current_tracer", trace_top_dir()?);
 
-    writeln_str_file(&current_tracer, "nop", false).await?;
+    writeln_str_file(&current_tracer, "nop", false)?;
 
     let fns = vec!["do_sys_open", "do_sys_openat2"];
     let mut probes = vec![];
@@ -106,7 +106,7 @@ async fn async_main() -> Result<(), JtraceError> {
             kp.add_arg("flag=+0($arg3):x32");
             kp.add_arg("mode=+0($arg4):x32");
             kp.build().await?;
-            kp.enable().await?;
+            kp.enable()?;
 
             probes.push(kp);
         }
@@ -122,7 +122,7 @@ async fn async_main() -> Result<(), JtraceError> {
     println!("{}", "=".repeat(80));
 
     let start = tokio::time::Instant::now();
-    Kprobe::tracing_start().await?;
+    Kprobe::tracing_start()?;
     loop {
         tokio::select! {
             //Ok(log) = tlog.trace_print() => print!("{}", log),
@@ -181,8 +181,8 @@ async fn async_main() -> Result<(), JtraceError> {
                  }
             },
             _result = wait_to_finish(start, duration) => {
-                Kprobe::tracing_stop().await?;
-                Kprobe::clear_kprobe_event().await?;
+                Kprobe::tracing_stop()?;
+                Kprobe::clear_kprobe_event()?;
                 break;
             },
 

@@ -2,7 +2,7 @@ use error_stack::IntoReport;
 
 #[allow(unused)]
 use {
-    crate::{writeln_proc, writeln_str_file, JtraceError},
+    crate::{trace_top_dir, writeln_proc, writeln_str_file, JtraceError},
     error_stack::{Report, Result, ResultExt},
     jlogger_tracing::{
         jdebug, jerror, jinfo, jtrace, jwarn, JloggerBuilder, LevelFilter, LogTimeFormat,
@@ -22,26 +22,20 @@ use {
     },
 };
 
-static TRACING_TOP: Lazy<AtomicPtr<TracePath>> = Lazy::new(|| {
-    let tp = Box::into_raw(Box::new(TracePath {
-        top: String::from("/sys/kernel/debug/tracing"),
-    }));
+pub fn get_tracing_top() -> Result<&'static TracePath, JtraceError> {
+    static TRACING_PATH: AtomicPtr<TracePath> = AtomicPtr::new(std::ptr::null_mut());
 
-    AtomicPtr::new(tp)
-});
+    let mut tp = TRACING_PATH.load(Ordering::Acquire);
 
-pub fn set_tracing_top(top: &str) {
-    let tp = Box::into_raw(Box::new(TracePath {
-        top: top.to_string(),
-    }));
+    if tp == std::ptr::null_mut() {
+        tp = Box::into_raw(Box::new(TracePath {
+            top: trace_top_dir()?.to_string(),
+        }));
 
-    let old = TRACING_TOP.swap(tp, Ordering::Release);
-    drop(unsafe { Box::from_raw(old) })
-}
+        TRACING_PATH.store(tp, Ordering::Release);
+    }
 
-pub fn get_tracing_top() -> &'static TracePath {
-    let tp = TRACING_TOP.load(Ordering::Acquire);
-    unsafe { &*tp }
+    Ok(unsafe { &*tp })
 }
 
 pub struct TracePath {
@@ -81,7 +75,7 @@ impl Kprobe {
             format!("probe{}_{}", i, fname)
         });
 
-        let tracing_top = get_tracing_top().tracing_top();
+        let tracing_top = get_tracing_top()?.tracing_top();
 
         let p = Path::new(tracing_top);
         if p.is_dir() {
@@ -120,43 +114,43 @@ impl Kprobe {
                     .attach_printable(format!("{} kprobe already added", self.group));
             }
 
-            writeln_str_file(&kprobe_events, &kprobe, true).await?;
+            writeln_str_file(&kprobe_events, &kprobe, true)?;
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
 
         Ok(())
     }
 
-    pub async fn tracing_start() -> Result<(), JtraceError> {
-        writeln_str_file(&get_tracing_top().kprobe_enable(), "1", false).await?;
-        writeln_str_file(&get_tracing_top().tracing_on(), "1", false).await
+    pub fn tracing_start() -> Result<(), JtraceError> {
+        writeln_str_file(&get_tracing_top()?.kprobe_enable(), "1", false)?;
+        writeln_str_file(&get_tracing_top()?.tracing_on(), "1", false)
     }
 
-    pub async fn tracing_stop() -> Result<(), JtraceError> {
-        writeln_str_file(&get_tracing_top().tracing_on(), "0", false).await?;
-        writeln_str_file(&get_tracing_top().kprobe_enable(), "0", false).await
+    pub fn tracing_stop() -> Result<(), JtraceError> {
+        writeln_str_file(&get_tracing_top()?.tracing_on(), "0", false)?;
+        writeln_str_file(&get_tracing_top()?.kprobe_enable(), "0", false)
     }
 
-    pub async fn clear_kprobe_event() -> Result<(), JtraceError> {
-        writeln_str_file(&get_tracing_top().kprobe_events(), "", false).await
+    pub fn clear_kprobe_event() -> Result<(), JtraceError> {
+        writeln_str_file(&get_tracing_top()?.kprobe_events(), "", false)
     }
 
-    pub async fn enable(&self) -> Result<(), JtraceError> {
+    pub fn enable(&self) -> Result<(), JtraceError> {
         let enable = format!(
             "{}/events/kprobes/{}/enable",
-            get_tracing_top().tracing_top(),
+            get_tracing_top()?.tracing_top(),
             self.group
         );
-        writeln_str_file(&enable, "1", false).await
+        writeln_str_file(&enable, "1", false)
     }
 
-    pub async fn disable(&self) -> Result<(), JtraceError> {
+    pub fn disable(&self) -> Result<(), JtraceError> {
         let enable = format!(
             "{}/events/kprobes/{}/enable",
-            get_tracing_top().tracing_top(),
+            get_tracing_top()?.tracing_top(),
             self.group
         );
-        writeln_str_file(&enable, "0", false).await
+        writeln_str_file(&enable, "0", false)
     }
 
     pub fn group(&self) -> &str {
@@ -164,7 +158,7 @@ impl Kprobe {
     }
 
     pub async fn exit(self) {
-        let kprobe_events = format!("{}/kprobe_events", get_tracing_top().tracing_top());
+        let kprobe_events = format!("{}/kprobe_events", get_tracing_top().unwrap().tracing_top());
 
         if let Ok(probes) = fs::read_to_string(&kprobe_events).await {
             let mut entry = format!("p:kprobes/{} {}", self.group, self.fname);
@@ -174,8 +168,8 @@ impl Kprobe {
             }
 
             if probes.contains(&entry) {
-                self.disable().await.unwrap();
-                if let Err(e) = writeln_str_file(&kprobe_events, "", false).await {
+                self.disable().unwrap();
+                if let Err(e) = writeln_str_file(&kprobe_events, "", false) {
                     jerror!("Failed to disable kprobe {}: {:?}", self.group, e);
                 }
             } else {

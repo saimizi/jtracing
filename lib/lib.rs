@@ -4,13 +4,10 @@ use {
     std::{
         ffi::{CStr, CString},
         fmt::Display,
-        path::{Path, PathBuf},
-    },
-    tokio::{
         fs::{self, File},
-        io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
-        sync::mpsc::{self, Receiver, Sender},
-        task::JoinHandle,
+        io::{BufRead, BufReader, BufWriter, Write},
+        path::{Path, PathBuf},
+        sync::atomic::{AtomicPtr, Ordering},
     },
 };
 
@@ -21,7 +18,7 @@ pub mod tracelog;
 
 pub use error::JtraceError;
 use error_stack::IntoReport;
-pub use kprobe::{set_tracing_top, Kprobe};
+pub use kprobe::Kprobe;
 pub use symbolanalyzer::ElfFile;
 pub use symbolanalyzer::ExecMap;
 pub use symbolanalyzer::KernelMap;
@@ -75,7 +72,7 @@ pub fn writeln_proc(f: &str, s: &str, append: bool) -> Result<(), JtraceError> {
     Ok(())
 }
 
-pub async fn writeln_str_file(f: &str, s: &str, append: bool) -> Result<(), JtraceError> {
+pub fn writeln_str_file(f: &str, s: &str, append: bool) -> Result<(), JtraceError> {
     let fp = Path::new(f);
 
     if !fp.is_file() {
@@ -88,7 +85,6 @@ pub async fn writeln_str_file(f: &str, s: &str, append: bool) -> Result<(), Jtra
         .write(true)
         .append(append)
         .open(fp)
-        .await
         .into_report()
         .change_context(JtraceError::IOError)
         .attach_printable(format!("Failed to open {}", f))?;
@@ -106,14 +102,12 @@ pub async fn writeln_str_file(f: &str, s: &str, append: bool) -> Result<(), Jtra
 
     writer
         .write(ns.as_bytes())
-        .await
         .into_report()
         .change_context(JtraceError::IOError)
         .attach_printable(format!("Failed write {} to {}", ns, f))?;
 
     writer
         .flush()
-        .await
         .into_report()
         .change_context(JtraceError::IOError)
         .attach_printable(format!("Failed write {} to {}", ns, f))?;
@@ -121,36 +115,40 @@ pub async fn writeln_str_file(f: &str, s: &str, append: bool) -> Result<(), Jtra
     Ok(())
 }
 
-pub async fn trace_top_dir() -> Result<String, JtraceError> {
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .open(Path::new("/proc/mounts"))
-        .await
-        .into_report()
-        .change_context(JtraceError::IOError)?;
+pub fn trace_top_dir() -> Result<&'static str, JtraceError> {
+    static TRACING_TOP: AtomicPtr<String> = AtomicPtr::<String>::new(std::ptr::null_mut());
 
-    let mut lines = BufReader::new(file).lines();
+    let mut top = TRACING_TOP.load(Ordering::Acquire);
+    if top == std::ptr::null_mut() {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .open(Path::new("/proc/mounts"))
+            .into_report()
+            .change_context(JtraceError::IOError)?;
+        let mut lines = BufReader::new(file).lines();
 
-    while let Some(l) = &lines
-        .next_line()
-        .await
-        .into_report()
-        .change_context(JtraceError::IOError)?
-    {
-        let entries: Vec<&str> = l.split(' ').collect();
-        if entries[0] != "debugfs" {
-            continue;
+        while let Some(Ok(l)) = lines.next() {
+            let entries: Vec<&str> = l.split(' ').collect();
+
+            if entries[0] != "debugfs" {
+                continue;
+            }
+
+            let mut trace_top = String::from(entries[1]);
+            trace_top.push_str("/tracing");
+            top = Box::into_raw(Box::new(trace_top));
+            TRACING_TOP.store(top, Ordering::Release);
+            break;
         }
-
-        let mut tracing_dir = String::from(entries[1]);
-        tracing_dir.push_str("/tracing");
-
-        return Ok(tracing_dir);
     }
 
-    Err(JtraceError::InvalidData)
-        .into_report()
-        .attach_printable("trace_pipe not found")
+    if top == std::ptr::null_mut() {
+        Err(JtraceError::InvalidData)
+            .into_report()
+            .attach_printable("trace top directory not found")
+    } else {
+        Ok(unsafe { &*top })
+    }
 }
 
 pub fn bump_memlock_rlimit() {
