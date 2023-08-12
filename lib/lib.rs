@@ -1,6 +1,7 @@
 #[allow(unused)]
 use {
     error_stack::{Report, Result, ResultExt},
+    jlogger_tracing::{jdebug, jerror, jinfo, jwarn},
     std::{
         ffi::{CStr, CString},
         fmt::Display,
@@ -119,7 +120,7 @@ pub fn trace_top_dir() -> Result<&'static str, JtraceError> {
     static TRACING_TOP: AtomicPtr<String> = AtomicPtr::<String>::new(std::ptr::null_mut());
 
     let mut top = TRACING_TOP.load(Ordering::Acquire);
-    if top == std::ptr::null_mut() {
+    if top.is_null() {
         let file = fs::OpenOptions::new()
             .read(true)
             .open(Path::new("/proc/mounts"))
@@ -142,12 +143,67 @@ pub fn trace_top_dir() -> Result<&'static str, JtraceError> {
         }
     }
 
-    if top == std::ptr::null_mut() {
+    if top.is_null() {
         Err(JtraceError::InvalidData)
             .into_report()
             .attach_printable("trace top directory not found")
     } else {
         Ok(unsafe { &*top })
+    }
+}
+
+pub fn tracepoints() -> Result<&'static str, JtraceError> {
+    static TRACEPOINTS: AtomicPtr<String> = AtomicPtr::<String>::new(std::ptr::null_mut());
+
+    let mut tracepoints = TRACEPOINTS.load(Ordering::Acquire);
+    if tracepoints.is_null() {
+        let mut trace_points = String::new();
+        let mut events_dir = trace_top_dir()?.to_string();
+        events_dir.push_str("/events");
+
+        let mut path_dir = fs::read_dir(events_dir)
+            .into_report()
+            .change_context(JtraceError::IOError)?;
+
+        while let Some(Ok(entry)) = path_dir.next() {
+            if let Ok(d) = entry.file_type() {
+                if !d.is_dir() {
+                    continue;
+                }
+
+                if let Some(d) = entry.file_name().to_str() {
+                    let category = String::from(d);
+
+                    if let Ok(mut internal) = fs::read_dir(entry.path()) {
+                        while let Some(Ok(entry)) = internal.next() {
+                            if let Ok(d) = entry.file_type() {
+                                if !d.is_dir() {
+                                    continue;
+                                }
+
+                                if let Some(tp) = entry.file_name().to_str() {
+                                    let tracepoint = format!("{}:{}\n", category, tp);
+                                    jdebug!("find tracepoint {}", tracepoint);
+                                    trace_points.push_str(&tracepoint);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !trace_points.is_empty() {
+            tracepoints = Box::into_raw(Box::new(trace_points));
+            TRACEPOINTS.store(tracepoints, Ordering::Release);
+        }
+    }
+
+    if !tracepoints.is_null() {
+        Ok(unsafe { &*tracepoints })
+    } else {
+        Err(JtraceError::InvalidData)
+            .into_report()
+            .attach_printable("Trace points are not found.")
     }
 }
 

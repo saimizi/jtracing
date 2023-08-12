@@ -28,8 +28,8 @@ use {
         time::Instant,
     },
     tracelib::{
-        bump_memlock_rlimit, bytes_to_string, ElfFile, ExecMap, KernelMap, NmSymbolType,
-        SymbolAnalyzer,
+        bump_memlock_rlimit, bytes_to_string, tracepoints, ElfFile, ExecMap, KernelMap,
+        NmSymbolType, SymbolAnalyzer,
     },
 };
 
@@ -116,6 +116,11 @@ struct Cli {
     ///one symbol per line
     #[clap(short = 'S', long = "symbol-file")]
     symbol_file: Option<String>,
+
+    ///File that store symbols to be traced.
+    ///one symbol per line
+    #[clap(short = 'l', long)]
+    list_tracepoints: bool,
 
     #[clap()]
     args: Vec<String>,
@@ -447,6 +452,14 @@ fn main() -> Result<(), FuncCountError> {
         .log_runtime(false)
         .build();
 
+    if cli.list_tracepoints {
+        tracepoints()
+            .change_context(FuncCountError::Unexpected)?
+            .split('\n')
+            .for_each(|s| println!("{}", s));
+        return Ok(());
+    }
+
     bump_memlock_rlimit();
 
     let skel_builder = FunccountSkelBuilder::default();
@@ -532,7 +545,10 @@ fn main() -> Result<(), FuncCountError> {
             .change_context(FuncCountError::Unexpected)
             .attach_printable("Failed to load kernel map")?;
 
-        let tracepoints: Vec<&str> = include_str!("tracepoints").split('\n').collect();
+        let tracepoints: Vec<&str> = tracepoints()
+            .change_context(FuncCountError::Unexpected)?
+            .split('\n')
+            .collect();
         let mut sym_to_trace = &cli.args;
         let mut sym_to_trace_vec = vec![];
 

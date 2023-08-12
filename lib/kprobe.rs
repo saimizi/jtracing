@@ -27,7 +27,7 @@ pub fn get_tracing_top() -> Result<&'static TracePath, JtraceError> {
 
     let mut tp = TRACING_PATH.load(Ordering::Acquire);
 
-    if tp == std::ptr::null_mut() {
+    if tp.is_null() {
         tp = Box::into_raw(Box::new(TracePath {
             top: trace_top_dir()?.to_string(),
         }));
