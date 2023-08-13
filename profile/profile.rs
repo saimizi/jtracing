@@ -9,7 +9,7 @@ use {
         libbpf_sys::perf_buffer,
         set_print,
         skel::{OpenSkel, Skel, SkelBuilder},
-        PerfBufferBuilder, PrintLevel,
+        PerfBufferBuilder, PrintLevel, RingBufferBuilder,
     },
     perf_event_open_sys as perf_sys,
     plain::Plain,
@@ -18,7 +18,7 @@ use {
         collections::HashMap,
         fs,
         io::{self, Write},
-        process,
+        mem, process,
         rc::Rc,
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -124,116 +124,126 @@ fn main() -> Result<(), JtraceError> {
 
     let events: Rc<RefCell<Vec<Event>>> = Rc::new(RefCell::new(Vec::new()));
     let maps = Rc::new(RefCell::new(HashMap::new()));
-    {
-        let events_c = events.clone();
-        let maps_c = maps.clone();
-        let handle_event = move |_cpu: i32, data: &[u8]| {
-            let mut entry = Event::default();
-            plain::copy_from_bytes(&mut entry, data).expect("Corrupted data");
-
-            if let Ok(em) = ExecMap::new(entry.pid) {
-                maps_c.borrow_mut().insert(entry.pid, em);
-                events_c.borrow_mut().push(entry)
-            }
-
-            print!("  Retrieve {} events\r", events_c.borrow().len());
-            io::stdout().flush().unwrap();
-        };
-
-        let perfbuf = PerfBufferBuilder::new(skel.maps().pb())
-            .sample_cb(handle_event)
-            .pages(16) // 4k * 16
-            .build()
-            .into_report()
-            .change_context(JtraceError::IOError)
-            .attach_printable("Failed to create perf buffer")?;
-
-        let mut attrs = perf_sys::bindings::perf_event_attr {
-            type_: perf_sys::bindings::PERF_TYPE_HARDWARE,
-            config: perf_sys::bindings::PERF_COUNT_HW_CPU_CYCLES as u64,
-            sample_type: perf_sys::bindings::PERF_SAMPLE_RAW,
-            ..Default::default()
-        };
-
-        attrs.__bindgen_anon_1.sample_freq = cli.frequency;
-        attrs.set_freq(1);
-
-        let mut links = vec![];
-
-        let pid = cli.pid.map(|a| a as i32).unwrap_or(-1);
-        let mut target_cpu: Vec<i32> = (0..cpu_num).map(|a| a as i32).collect();
-
-        if let Some(c) = cli.cpu {
-            target_cpu.retain(|&a| c.iter().any(|&b| a == b as i32));
+    let events_c = events.clone();
+    let maps_c = maps.clone();
+    let expected_event_len = mem::size_of::<Event>();
+    let handle_event = move |data: &[u8]| -> i32 {
+        if data.len() != expected_event_len {
+            jwarn!("Invalid data {} vs {}", data.len(), expected_event_len);
+            return -1;
         }
 
-        if pid == -1 {
-            jinfo!(
-                "Sampling ALL processes on CPU {:?} at {}Hz",
-                target_cpu,
-                cli.frequency
-            );
-        } else {
-            jinfo!(
-                "Sampling pid {} on CPU {:?} at {}Hz",
-                pid,
-                target_cpu,
-                cli.frequency
-            );
+        let mut entry = Event::default();
+        plain::copy_from_bytes(&mut entry, data).expect("Corrupted data");
+
+        if let Ok(em) = ExecMap::new(entry.pid) {
+            maps_c.borrow_mut().insert(entry.pid, em);
+            events_c.borrow_mut().push(entry)
         }
 
-        let mut group_fd = -1;
-        for cpu in target_cpu {
-            let pfd = unsafe {
-                perf_sys::perf_event_open(
-                    &mut attrs,
-                    pid,
-                    cpu,
-                    -1,
-                    perf_sys::bindings::PERF_FLAG_FD_CLOEXEC as u64,
-                )
-            };
-            assert!(pfd > 0);
+        print!("  Retrieve {} events\r", events_c.borrow().len());
+        io::stdout().flush().unwrap();
 
-            if group_fd == -1 {
-                group_fd = pfd;
-            }
+        0
+    };
 
-            links.push(
-                skel.progs_mut()
-                    .do_perf_event()
-                    .attach_perf_event(pfd)
-                    .into_report()
-                    .change_context(JtraceError::BPFError)?,
-            );
-        }
+    let mut builder = RingBufferBuilder::new();
 
-        let running = Arc::new(AtomicBool::new(true));
-        let r = running.clone();
-
-        ctrlc::set_handler(move || {
-            r.store(false, Ordering::Release);
-        })
+    let skel_maps = skel.maps();
+    builder
+        .add(skel_maps.rb(), handle_event)
         .into_report()
-        .change_context(JtraceError::IOError)?;
+        .change_context(JtraceError::BPFError)?;
 
-        let timeout = cli
-            .duration
-            .map(Duration::from_secs)
-            .unwrap_or_else(|| Duration::from_secs(u64::MAX));
+    let ringbuf = builder
+        .build()
+        .into_report()
+        .change_context(JtraceError::BPFError)?;
 
-        let start = Instant::now();
-        while running.load(Ordering::Acquire) {
-            let _ = perfbuf.poll(timeout);
-            if start.elapsed() >= timeout {
-                break;
-            }
+    let mut attrs = perf_sys::bindings::perf_event_attr {
+        type_: perf_sys::bindings::PERF_TYPE_HARDWARE,
+        config: perf_sys::bindings::PERF_COUNT_HW_CPU_CYCLES as u64,
+        sample_type: perf_sys::bindings::PERF_SAMPLE_RAW,
+        ..Default::default()
+    };
+
+    attrs.__bindgen_anon_1.sample_freq = cli.frequency;
+    attrs.set_freq(1);
+
+    let mut links = vec![];
+
+    let pid = cli.pid.map(|a| a as i32).unwrap_or(-1);
+    let mut target_cpu: Vec<i32> = (0..cpu_num).map(|a| a as i32).collect();
+
+    if let Some(c) = cli.cpu {
+        target_cpu.retain(|&a| c.iter().any(|&b| a == b as i32));
+    }
+
+    if pid == -1 {
+        jinfo!(
+            "Sampling ALL processes on CPU {:?} at {}Hz",
+            target_cpu,
+            cli.frequency
+        );
+    } else {
+        jinfo!(
+            "Sampling pid {} on CPU {:?} at {}Hz",
+            pid,
+            target_cpu,
+            cli.frequency
+        );
+    }
+
+    let mut group_fd = -1;
+    for cpu in target_cpu {
+        let pfd = unsafe {
+            perf_sys::perf_event_open(
+                &mut attrs,
+                pid,
+                cpu,
+                -1,
+                perf_sys::bindings::PERF_FLAG_FD_CLOEXEC as u64,
+            )
+        };
+        assert!(pfd > 0);
+
+        if group_fd == -1 {
+            group_fd = pfd;
         }
 
-        perfbuf.consume().unwrap();
-        for mut l in links {
-            l.disconnect();
+        links.push(
+            skel.progs_mut()
+                .do_perf_event()
+                .attach_perf_event(pfd)
+                .into_report()
+                .change_context(JtraceError::BPFError)?,
+        );
+    }
+
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::Release);
+    })
+    .into_report()
+    .change_context(JtraceError::IOError)?;
+
+    let timeout = cli
+        .duration
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(u64::MAX));
+
+    let start = Instant::now();
+    while running.load(Ordering::Acquire) {
+        let _ = ringbuf.poll(timeout);
+        if start.elapsed() >= timeout {
+            break;
         }
+    }
+
+    for mut l in links {
+        l.disconnect();
     }
 
     if !events.borrow().is_empty() {

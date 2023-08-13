@@ -27,19 +27,9 @@ struct event {
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 struct {
-	__uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 8192);
-	__type(key, int);
-	__type(value, int);
-} pb SEC(".maps");
-
-struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 1);
-	__type(key, int);
-	__type(value, struct event);
-} heap SEC(".maps");
-
+} rb SEC(".maps");
 
 struct event _event = {};
 
@@ -64,8 +54,7 @@ int do_perf_event(struct bpf_perf_event_data *ctx)
 		return 0;
 
 
-	int zero = 0;
-	struct event *e = bpf_map_lookup_elem(&heap, &zero);
+	struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
 	if (!e)
 		return 0;
 
@@ -77,7 +66,7 @@ int do_perf_event(struct bpf_perf_event_data *ctx)
 	e->kstack_sz = bpf_get_stack(ctx, e->kstack, sizeof(e->kstack), 0);
 	e->ustack_sz = bpf_get_stack(ctx, e->ustack, sizeof(e->ustack), BPF_F_USER_STACK);
 
-	bpf_perf_event_output(ctx, &pb, BPF_F_CURRENT_CPU, e, sizeof(*e));
+	bpf_ringbuf_submit(e, 0);
 
 	return 0;
 }
