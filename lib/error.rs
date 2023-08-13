@@ -17,6 +17,7 @@ use {
 pub enum JtraceError {
     InvalidData,
     IOError,
+    BPFError,
     SymbolAnalyzerError,
 }
 
@@ -33,6 +34,7 @@ pub fn error_desc(error: &JtraceError) -> (i32, &'static str) {
     match error {
         JtraceError::InvalidData => (-1, "Invalid data"),
         JtraceError::IOError => (-2, "IO error"),
-        JtraceError::SymbolAnalyzerError => (-3, "SymbolAnalyzer error"),
+        JtraceError::BPFError => (-3, "BPF error"),
+        JtraceError::SymbolAnalyzerError => (-4, "SymbolAnalyzer error"),
     }
 }

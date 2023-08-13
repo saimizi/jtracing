@@ -148,8 +148,6 @@ fn main() -> Result<(), JtraceError> {
             .change_context(JtraceError::IOError)
             .attach_printable("Failed to create perf buffer")?;
 
-        let obj = skel.object_mut();
-        let prog = obj.prog_mut("do_perf_event").unwrap();
         let mut attrs = perf_sys::bindings::perf_event_attr {
             type_: perf_sys::bindings::PERF_TYPE_HARDWARE,
             config: perf_sys::bindings::PERF_COUNT_HW_CPU_CYCLES as u64,
@@ -202,8 +200,11 @@ fn main() -> Result<(), JtraceError> {
             }
 
             links.push(
-                prog.attach_perf_event(pfd)
-                    .expect("Failed to attach perf event."),
+                skel.progs_mut()
+                    .do_perf_event()
+                    .attach_perf_event(pfd)
+                    .into_report()
+                    .change_context(JtraceError::BPFError)?,
             );
         }
 
