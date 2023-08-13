@@ -33,7 +33,7 @@ fn print_to_log(level: PrintLevel, msg: String) {
 
 #[derive(Parser, Debug)]
 struct Cli {
-    ///Trace process lives at least <DURATION> ms.
+    ///Trace EXIT event for processes lives at least <DURATION> ms.
     #[clap(short, default_value_t = 0_u64)]
     duration: u64,
 
@@ -44,6 +44,11 @@ struct Cli {
     ///Use timestamp instead of date time.
     #[clap(short = 'r', long)]
     timestamp: bool,
+
+    ///Show exec trace.
+    ///This is default when no other event specified.
+    #[clap(short = 'E', long)]
+    exec_event: bool,
 
     ///Show fork trace.
     #[clap(short = 'f', long)]
@@ -185,19 +190,37 @@ fn main() -> Result<(), JtraceError> {
             }
             println!();
         } else if event.event_type == 0 {
+            if !cli.exec_event && (cli.fork_event || cli.exit_event) {
+                return;
+            }
+
             if !cli.thread && event.tid != event.pid {
                 return;
             }
 
-            let args_raw =
-                String::from_utf8_lossy(&event.args[..event.args_size as usize]).to_string();
-            let mut args = args_raw.split('\0').collect::<Vec<&str>>();
-            let args_str = args[0..event.args_count as usize].join(" ");
-            let filename = unsafe { bytes_to_string(event.filename.as_ptr()) };
+            let mut arg_parsed = vec![];
 
-            if args.is_empty() && !filename.is_empty() {
-                args.push(&filename);
+            let mut parsed_cnt = 0;
+            let mut index = 0;
+
+            jdebug!(args_count = event.args_count);
+            while parsed_cnt < event.args_count {
+                let p = &event.args[index..index + 16];
+                let arg = unsafe { bytes_to_string(std::mem::transmute(p.as_ptr())) };
+                arg_parsed.push(arg.clone());
+
+                jdebug!(parsed_cnt = parsed_cnt, index = index, arg = arg);
+                parsed_cnt += 1;
+                index += 16;
             }
+            if arg_parsed.is_empty() {
+                let filename = unsafe { bytes_to_string(event.filename.as_ptr()) };
+                if !filename.is_empty() {
+                    arg_parsed.push(filename);
+                }
+            }
+
+            let args_str = arg_parsed.join(" ");
 
             let fork_info = {
                 if event.flag & 0x1 == 0x1 {
@@ -244,6 +267,8 @@ fn main() -> Result<(), JtraceError> {
             if cli.ppid {
                 print_id(event.ppid);
             }
+
+            print!(" {}->{}", event.parent_pid, event.child_pid);
 
             if event.duration_ns > 0 {
                 print!(" ({}ms)", event.duration_ns / 1000000_u64);
