@@ -8,9 +8,9 @@
 #define TASK_COMM_LEN 16
 #define MAX_FILENAME_LEN 128
 
-#define ARGSIZE 128
-#define TOTAL_MAX_ARGS 60
-#define DEFAULT_MAXARGS 20
+#define ARGSIZE 16
+#define TOTAL_MAX_ARGS 16
+#define DEFAULT_MAXARGS 16
 #define FULL_MAX_ARGS_ARR (TOTAL_MAX_ARGS * ARGSIZE)
 #define LAST_ARG (FULL_MAX_ARGS_ARR - ARGSIZE)
 
@@ -20,6 +20,8 @@ struct event {
 	int pid;
 	int tid;
 	int ppid;
+	int parent_pid;
+	int child_pid;
 	unsigned exit_code;
 	unsigned long long duration_ns;
 	char comm[TASK_COMM_LEN];
@@ -151,21 +153,35 @@ int handle_exec(struct trace_event_raw_sys_enter_execve *ctx)
 	int i;
 	e->args_size = 0;
 	e->args_count = 0;
+	unsigned char *p0 = e->args;
 	#pragma unroll
 	for (i = 0; i < DEFAULT_MAXARGS; i++) {
+
+		char *p;
 		ret = bpf_probe_read_user(&p, sizeof(p), &ctx->argv[i]);
-		if (ret < 0)
+		if (ret < 0) {
+			bpf_printk("Error1");
 			break;
+		}
 
-		if (e->args_size > LAST_ARG)
+		if (p == NULL) {
+			bpf_printk("OK");
 			break;
+		}
 
-		ret = bpf_probe_read_user_str(&e->args[e->args_size], ARGSIZE, p);
-		if (ret <= 0) 
+		if (p0  >= e->args + FULL_MAX_ARGS_ARR) {
+			bpf_printk("Error2");
 			break;
+		}
+
+		ret = bpf_probe_read_user_str(p0, ARGSIZE, p);
+		if (ret <= 0) {
+			bpf_printk("Error3");
+			break;
+		}
 
 		e->args_count++;
-		e->args_size += ret;
+		p0 += ARGSIZE;
 	}
 
 	struct fork_event *fe = bpf_map_lookup_elem(&fork_events, &tid);
@@ -182,6 +198,7 @@ int handle_exec(struct trace_event_raw_sys_enter_execve *ctx)
 SEC("tp/sched/sched_process_fork")
 int handle_fork(struct trace_event_raw_sched_process_fork *ctx)
 {
+	struct task_struct *task;
 	struct fork_event fork_entry = {};
 	struct fork_event *efork = &fork_entry;
 	pid_t child_pid; 
@@ -198,11 +215,16 @@ int handle_fork(struct trace_event_raw_sched_process_fork *ctx)
 	bpf_probe_read_str(&efork->comm, sizeof(efork->comm), &ctx->parent_comm);
 	bpf_map_update_elem(&fork_events, &child_pid, efork, BPF_ANY);
 
+	u64 pid_tid = bpf_get_current_pid_tgid();
 	e->event_type = 2;
-	e->tid = child_pid;
-	e->pid = bpf_get_current_pid_tgid() >> 32;
-	e->ppid = parent_pid;
+	e->child_pid = child_pid;
+	e->parent_pid = parent_pid;
+	e->pid = pid_tid >> 32;
+	e->tid = pid_tid;
 	e->flag = 0;
+
+	task = (struct task_struct *)bpf_get_current_task();
+	e->ppid = BPF_CORE_READ(task, real_parent, tgid);
 	bpf_probe_read_str(&e->comm, sizeof(e->comm), &ctx->child_comm);
 	
 
