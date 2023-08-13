@@ -27,6 +27,7 @@ fn main() {
         "funccount",
         "eglswapbuffers",
         "profile",
+        "bash_readline",
     ];
     let out_dir = env::var("OUT_DIR").unwrap();
 
