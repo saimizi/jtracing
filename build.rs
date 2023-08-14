@@ -28,6 +28,7 @@ fn main() {
         "eglswapbuffers",
         "profile",
         "bash_readline",
+        "malloc_free",
     ];
     let out_dir = env::var("OUT_DIR").unwrap();
 

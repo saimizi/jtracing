@@ -19,6 +19,7 @@ pub enum JtraceError {
     IOError,
     BPFError,
     SymbolAnalyzerError,
+    UnExpected,
 }
 
 impl Display for JtraceError {
@@ -36,5 +37,6 @@ pub fn error_desc(error: &JtraceError) -> (i32, &'static str) {
         JtraceError::IOError => (-2, "IO error"),
         JtraceError::BPFError => (-3, "BPF error"),
         JtraceError::SymbolAnalyzerError => (-4, "SymbolAnalyzer error"),
+        JtraceError::UnExpected => (-5, "UnExpected error"),
     }
 }

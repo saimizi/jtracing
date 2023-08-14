@@ -40,6 +40,10 @@ path = "profile/profile.rs"
 name = "bash_readline"
 path = "bash_readline/bash_readline.rs"
 
+[[bin]]
+name = "malloc_free"
+path = "malloc_free/malloc_free.rs"
+
 [dependencies]
 clap = { version="3.1", features = ["derive"] }
 regex = "1"
