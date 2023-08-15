@@ -71,9 +71,9 @@ struct Cli {
     #[clap(short, long)]
     fold: bool,
 
-    ///Log file to store fold format output.
-    #[clap(long, default_value_t=String::from("profile.fold"))]
-    fold_file: String,
+    ///Log file to store output.
+    #[clap(short, long)]
+    output: Option<String>,
 
     ///Verbose
     #[clap(short, long, parse(from_occurrences))]
@@ -84,7 +84,7 @@ type Event = profile_bss_types::event;
 unsafe impl Plain for Event {}
 
 fn main() -> Result<(), JtraceError> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
     let max_level = match cli.verbose {
         0 => LevelFilter::INFO,
         1 => LevelFilter::DEBUG,
@@ -249,7 +249,8 @@ fn main() -> Result<(), JtraceError> {
     if !events.borrow().is_empty() {
         println!();
         jinfo!("Processing data...");
-        process_data(events, maps, cli.fold, &cli.fold_file)?;
+
+        process_data(events, maps, cli.fold, cli.output.take())?;
     } else {
         jinfo!("No data captured.");
     }
@@ -261,20 +262,29 @@ pub fn process_data(
     events: Rc<RefCell<Vec<Event>>>,
     map: Rc<RefCell<HashMap<u32, ExecMap>>>,
     fold: bool,
-    fold_file_name: &str,
+    output: Option<String>,
 ) -> Result<(), JtraceError> {
     let symanalyzer = SymbolAnalyzer::new(None).change_context(JtraceError::SymbolAnalyzerError)?;
 
     let mut no = 0;
     let total = events.borrow().len();
-    let _ = fs::remove_file(fold_file_name);
-    let mut fold_file = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .read(true)
-        .open(fold_file_name)
-        .into_report()
-        .change_context(JtraceError::IOError)?;
+
+    let mut output_file = None;
+    if let Some(file_name) = &output {
+        if let Some(output) = &output {
+            let _ = fs::remove_file(output);
+        }
+
+        output_file = Some(
+            fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .read(true)
+                .open(file_name)
+                .into_report()
+                .change_context(JtraceError::IOError)?,
+        );
+    }
 
     for event in events.borrow_mut().iter_mut() {
         let comm = unsafe { bytes_to_string(event.comm.as_ptr()) };
@@ -288,8 +298,22 @@ pub fn process_data(
 
         if !fold {
             no += 1;
+            if let Some(output) = &output {
+                print!("  Write {}/{} records to {}\r", no, total, output);
+                io::stdout().flush().unwrap();
+            }
 
-            println!("{:3} CPU:{} Comm:{} PID:{} TID:{}", no, cpu, comm, pid, tid);
+            if let Some(f) = &mut output_file {
+                writeln!(
+                    f,
+                    "{:3} CPU:{} Comm:{} PID:{} TID:{}",
+                    no, cpu, comm, pid, tid
+                )
+                .into_report()
+                .change_context(JtraceError::IOError)?;
+            } else {
+                println!("{:3} CPU:{} Comm:{} PID:{} TID:{}", no, cpu, comm, pid, tid);
+            }
 
             if kstack_sz > 0 {
                 //println!("  Kernel Stack ({}):", kstack_sz);
@@ -297,12 +321,24 @@ pub fn process_data(
                     let p_name = symanalyzer
                         .ksymbol(*addr)
                         .unwrap_or("[unknown]".to_string());
-                    println!("    {:x}  {}", addr, p_name);
+                    if let Some(f) = &mut output_file {
+                        writeln!(f, "    {:x}  {}", addr, p_name)
+                            .into_report()
+                            .change_context(JtraceError::IOError)?;
+                    } else {
+                        println!("    {:x}  {}", addr, p_name);
+                    }
                 }
             }
 
             if kstack_sz > 0 && ustack_sz > 0 {
-                println!("    ----");
+                if let Some(f) = &mut output_file {
+                    writeln!(f, "    ----")
+                        .into_report()
+                        .change_context(JtraceError::IOError)?;
+                } else {
+                    println!("    ----");
+                }
             }
 
             if ustack_sz > 0 {
@@ -318,18 +354,32 @@ pub fn process_data(
                         (0, "[unknown]".to_string(), "[unknown]".to_string())
                     };
 
-                    println!("    {:x}(+{})  {} {}", addr, offset, p_name, file);
+                    if let Some(f) = &mut output_file {
+                        writeln!(f, "    {:x}(+{})  {} {}", addr, offset, p_name, file)
+                            .into_report()
+                            .change_context(JtraceError::IOError)?;
+                    } else {
+                        println!("    {:x}(+{})  {} {}", addr, offset, p_name, file);
+                    }
                 }
             }
 
-            println!();
+            if let Some(f) = &mut output_file {
+                writeln!(f)
+                    .into_report()
+                    .change_context(JtraceError::IOError)?;
+            } else {
+                println!();
+            }
         } else {
             ustack.reverse();
             kstack.reverse();
 
             no += 1;
-            print!("  Write {}/{} records to {}\r", no, total, fold_file_name);
-            io::stdout().flush().unwrap();
+            if let Some(output) = &output {
+                print!("  Write {}/{} records to {}\r", no, total, output);
+                io::stdout().flush().unwrap();
+            }
 
             let mut fold_result = String::new();
             fold_result.push_str(&comm);
@@ -371,20 +421,22 @@ pub fn process_data(
             fold_result = fold_result.trim_end_matches(';').to_string();
             fold_result.push_str(&format!(" {}\n", pid));
 
-            fold_file
-                .write(fold_result.as_bytes())
-                .into_report()
-                .change_context(JtraceError::IOError)?;
-            fold_file
-                .flush()
-                .into_report()
-                .change_context(JtraceError::IOError)?;
+            if let Some(f) = &mut output_file {
+                f.write(fold_result.as_bytes())
+                    .into_report()
+                    .change_context(JtraceError::IOError)?;
+                f.flush()
+                    .into_report()
+                    .change_context(JtraceError::IOError)?;
+            } else {
+                println!("{}", fold_result);
+            }
         }
     }
 
-    if fold {
+    if let Some(output) = &output {
         println!();
-        jinfo!("Written to {}", fold_file_name);
+        jinfo!("Written to {}.", output);
     }
     Ok(())
 }
