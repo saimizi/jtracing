@@ -30,11 +30,8 @@ use {
 mod malloc_free;
 use malloc_free::*;
 
-type MallocEvent = malloc_free_bss_types::malloc_event;
-unsafe impl Plain for MallocEvent {}
-
-type MallocMax = malloc_free_bss_types::malloc_max;
-unsafe impl Plain for MallocMax {}
+type MallocRecord = malloc_free_bss_types::malloc_record;
+unsafe impl Plain for MallocRecord {}
 
 fn print_to_log(level: PrintLevel, msg: String) {
     match level {
@@ -62,83 +59,59 @@ struct Cli {
     #[clap(short = 'p', long)]
     pid: Option<i32>,
 
-    ///Specify ligEGL path.
+    ///Specify libc path.
     #[clap(short = 'l', long)]
     libpath: Option<String>,
 }
 
-#[derive(Default)]
-struct MallocResult {
-    comm: String,
-    total: u32,
-    max: u32,
-    ustack: Vec<u64>,
-    ustack_sz: usize,
-}
-
 fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceError> {
     let malloc_records = maps.malloc_records();
-    let malloc_max = maps.malloc_max_record();
-    let mut hash_result = HashMap::new();
 
+    println!(
+        "{:4} {:8} {:8} {:8} {:8} {:10} {:8} Comm",
+        "No", "PID", "Alloc", "Free", "Real", "Real.max", "Req.max"
+    );
+    let mut idx = 0;
     for key in malloc_records.keys() {
         if let Ok(Some(data)) = malloc_records.lookup(&key, MapFlags::ANY) {
-            let mut me = MallocEvent::default();
-            plain::copy_from_bytes(&mut me, &data).expect("Corrupted event data");
+            let mut mr = MallocRecord::default();
+            plain::copy_from_bytes(&mut mr, &data).expect("Corrupted event data");
 
-            let mut mr = hash_result.entry(me.pid).or_insert_with(|| MallocResult {
-                comm: unsafe { bytes_to_string(me.comm.as_ptr()) },
-                ..Default::default()
-            });
+            idx += 1;
+            let comm = unsafe { bytes_to_string(mr.comm.as_ptr()) };
 
-            mr.total += me.size;
+            println!(
+                "{:<4} {:<8} {:<8} {:<8} {:<8} {:<10} {:<8} {}",
+                idx,
+                mr.pid,
+                mr.alloc_size,
+                mr.free_size,
+                mr.alloc_size - mr.free_size,
+                mr.max_size,
+                mr.max_req_size,
+                comm
+            );
 
-            let mut key = vec![];
-            key.write_u32::<NativeEndian>(me.pid)
-                .into_report()
-                .change_context(JtraceError::InvalidData)?;
-            if let Ok(Some(m)) = malloc_max.lookup(&key, MapFlags::ANY) {
-                let mut m_max = MallocMax::default();
-                plain::copy_from_bytes(&mut m_max, &m).expect("Corrupted event data");
-                mr.max = m_max.max;
+            if cli.max_malloc_path {
+                println!("    ----");
+                let ustack_sz = (mr.ustack_sz / 8) as usize;
+                let ustack = &mr.ustack[..ustack_sz];
 
-                mr.ustack_sz = (m_max.ustack_sz / 8) as usize;
-                mr.ustack = m_max.ustack[..mr.ustack_sz]
-                    .into_iter()
-                    .map(|a| *a)
-                    .collect();
-            }
-        }
-    }
-
-    println!("{:4} {:8} {:8} {:8} Comm", "No", "PID", "Total", "Max");
-    for (idx, (pid, mr)) in hash_result.iter_mut().enumerate() {
-        println!(
-            "{:<4} {:<8} {:<8} {:<8} {}",
-            idx + 1,
-            pid,
-            mr.total,
-            mr.max,
-            mr.comm
-        );
-
-        if cli.max_malloc_path {
-            println!("    ----");
-            if let Ok(mut em) = ExecMap::new(*pid) {
-                for addr in &mr.ustack {
-                    let (offset, symbol, file) = em.symbol(*addr).unwrap_or((
-                        0,
-                        "[unknown]".to_string(),
-                        "unknown".to_string(),
-                    ));
-                    println!("    {:x}(+{})  {} {}", addr, offset, symbol, file);
+                if let Ok(mut em) = ExecMap::new(mr.pid) {
+                    for addr in ustack {
+                        let (offset, symbol, file) = em.symbol(*addr).unwrap_or((
+                            0,
+                            "[unknown]".to_string(),
+                            "unknown".to_string(),
+                        ));
+                        println!("    {:x}(+{})  {} {}", addr, offset, symbol, file);
+                    }
+                } else {
+                    println!("    No map found.");
                 }
-            } else {
-                println!("    No map found.");
+                println!();
             }
         }
-
-        println!();
     }
 
     Ok(())
@@ -241,11 +214,11 @@ fn main() -> Result<(), JtraceError> {
 
     if cli.duration > 0 {
         println!(
-            "Tracing {} for {} seconds, Type Ctrl-C to stop.",
+            "Tracing malloc() in {} for {} seconds, Type Ctrl-C to stop.",
             file, cli.duration
         );
     } else {
-        println!("Tracing {}... Type Ctrl-C to stop.", file);
+        println!("Tracing maloc() in {}... Type Ctrl-C to stop.", file);
     }
 
     while running.load(Ordering::Acquire) {
@@ -265,5 +238,6 @@ fn main() -> Result<(), JtraceError> {
     }
 
     println!("Tracing finished, Processing data...");
+    println!();
     process_events(&cli, &mut skel.maps())
 }
