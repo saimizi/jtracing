@@ -70,3 +70,4 @@ strip = true
 [build-dependencies]
 libbpf-cargo = "0.21"
 jlogger-tracing = "0.1.4"
+cc = "1.0.82"
