@@ -44,6 +44,10 @@ path = "bash_readline/bash_readline.rs"
 name = "malloc_free"
 path = "malloc_free/malloc_free.rs"
 
+[[bin]]
+name = "packet_count"
+path = "packet_count/packet_count.rs"
+
 [dependencies]
 clap = { version="3.1", features = ["derive"] }
 regex = "1"
@@ -63,6 +67,10 @@ error-stack = { version = "0.3.1", features = ["anyhow"] }
 jlogger-tracing = "0.1.4"
 once_cell = "1.18.0"
 perf-event-open-sys = "4.0.0"
+default-net = "0.17.0"
+
+[features]
+build_third_party = []
 
 [profile.release]
 strip = true
@@ -71,3 +79,4 @@ strip = true
 libbpf-cargo = "0.21"
 jlogger-tracing = "0.1.4"
 cc = "1.0.82"
+nix = "0.26.2"

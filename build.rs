@@ -4,6 +4,8 @@ use {
     jlogger_tracing::{
         jdebug, jerror, jinfo, jtrace, jwarn, JloggerBuilder, LevelFilter, LogTimeFormat,
     },
+    nix::fcntl,
+    std::os::fd::AsRawFd,
     std::{
         env,
         fs::{self, canonicalize, create_dir_all, remove_file, File},
@@ -17,6 +19,7 @@ use {
 extern crate libbpf_cargo;
 use libbpf_cargo::SkeletonBuilder;
 
+#[cfg(feature = "build_third_party")]
 fn build_zlib(compiler: &cc::Tool, install_dir: &PathBuf, build_log: &str) {
     jinfo!("CC {:?}", compiler.path());
     jinfo!("CFLAGS {:?}", compiler.cflags_env());
@@ -27,6 +30,13 @@ fn build_zlib(compiler: &cc::Tool, install_dir: &PathBuf, build_log: &str) {
         fs::create_dir_all(&install_dir).expect("Failed to create install directory.");
     }
     jinfo!("Install_dir: {:?}", &install_dir);
+
+    // lock README such that if two crates are trying to compile
+    // this at the same time (eg libbpf-rs libbpf-cargo)
+    // they wont trample each other
+    let file = std::fs::File::open(&src_dir.join("README")).unwrap();
+    let fd = file.as_raw_fd();
+    fcntl::flock(fd, fcntl::FlockArg::LockExclusive).unwrap();
 
     let status = Command::new("./configure")
         .arg("--static")
@@ -57,6 +67,7 @@ fn build_zlib(compiler: &cc::Tool, install_dir: &PathBuf, build_log: &str) {
     assert!(status.success(), "compile failed.");
 }
 
+#[cfg(feature = "build_third_party")]
 fn build_elfutils(compiler: &cc::Tool, install_dir: &PathBuf, build_log: &str, target: &str) {
     jinfo!("CC {:?}", compiler.path());
     jinfo!("CFLAGS {:?}", compiler.cflags_env());
@@ -65,6 +76,13 @@ fn build_elfutils(compiler: &cc::Tool, install_dir: &PathBuf, build_log: &str, t
     let zlib_src = canonicalize("third_party/zlib").expect("zlib source not found");
     let output = File::create(build_log).expect("Failed to create build log.");
     jinfo!("Install_dir: {:?}", &install_dir);
+
+    // lock README such that if two crates are trying to compile
+    // this at the same time (eg libbpf-rs libbpf-cargo)
+    // they wont trample each other
+    let file = std::fs::File::open(&elfutils_src.join("README")).unwrap();
+    let fd = file.as_raw_fd();
+    fcntl::flock(fd, fcntl::FlockArg::LockExclusive).unwrap();
 
     let makefile_path = elfutils_src.join("Makefile.am");
     let makefile = fs::read_to_string(&makefile_path).expect("Failed to read Makefile.am.");
@@ -159,22 +177,25 @@ fn main() {
         "profile",
         "bash_readline",
         "malloc_free",
+        "packet_count",
     ];
     let out_dir = env::var("OUT_DIR").unwrap();
-
     jinfo!("{}", out_dir);
 
     let target = env::var("TARGET").unwrap();
-    let compiler = cc::Build::new().get_compiler();
-    let install_dir = PathBuf::from(&out_dir).join("objs");
 
-    let build_log = "/tmp/build.log";
-    let _ = remove_file(build_log);
-    let _ = fs::remove_dir_all(&install_dir);
-    fs::create_dir_all(&install_dir).expect("Failed to create install directory.");
+    #[cfg(feature = "build_third_party")]
+    {
+        let compiler = cc::Build::new().get_compiler();
+        let install_dir = PathBuf::from(&out_dir).join("objs");
 
-    build_zlib(&compiler, &install_dir, build_log);
-    build_elfutils(&compiler, &install_dir, build_log, &target);
+        let build_log = "/tmp/build.log";
+        let _ = remove_file(build_log);
+        let _ = fs::remove_dir_all(&install_dir);
+        fs::create_dir_all(&install_dir).expect("Failed to create install directory.");
+        build_zlib(&compiler, &install_dir, build_log);
+        build_elfutils(&compiler, &install_dir, build_log, &target);
+    }
 
     for &app in applications.iter() {
         let app_bpf_dir = format!("{}/bpf", app);
@@ -198,8 +219,12 @@ fn main() {
             clang_args.push_str(" -D__TARGET_ARCH_x86")
         }
 
-        let cargo_search_path = format!("cargo:rustc-link-search={}", format!("{}/objs", out_dir));
-        println!("{}", cargo_search_path);
+        #[cfg(feature = "build_third_party")]
+        {
+            let cargo_search_path =
+                format!("cargo:rustc-link-search={}", format!("{}/objs", out_dir));
+            println!("{}", cargo_search_path);
+        }
 
         let abs_path_vmlinux_inc = canonicalize(vmlinux_inc).unwrap();
         clang_args.push_str(&format!(
