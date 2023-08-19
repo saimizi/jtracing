@@ -89,17 +89,32 @@ fn main() -> Result<(), JtraceError> {
     let mut ifnames = vec![];
 
     for i in interface::get_interfaces() {
-        if cli.ifname.iter().any(|a| a == &i.name) {
-            ifnames.push(i.name);
-            links.push(
-                skel.progs_mut()
-                    .xdp_stats_func()
-                    .attach_xdp(i.index as i32)
-                    .into_report()
-                    .change_context(JtraceError::BPFError)
-                    .attach_printable("Failed to attach xdp program")?,
-            );
+        if cli.ifname.is_empty() {
+            if let Ok(l) = skel
+                .progs_mut()
+                .xdp_stats_func1()
+                .attach_xdp(i.index as i32)
+            {
+                links.push(l);
+            }
+        } else {
+            if cli.ifname.iter().any(|a| a == &i.name) {
+                ifnames.push(i.name);
+                links.push(
+                    skel.progs_mut()
+                        .xdp_stats_func2()
+                        .attach_xdp(i.index as i32)
+                        .into_report()
+                        .change_context(JtraceError::BPFError)
+                        .attach_printable("Failed to attach xdp program")?,
+                );
+            }
         }
+    }
+
+    if !cli.ifname.is_empty() && ifnames.is_empty() {
+        jinfo!("No valid interface found.");
+        return Ok(());
     }
 
     let running = Arc::new(AtomicBool::new(true));
@@ -144,35 +159,58 @@ fn main() -> Result<(), JtraceError> {
     let mut no = 0;
 
     println!();
-    println!(
-        "{:8} {:9} {:8} {:8} Interface",
-        "No", "Rx.packet", "Rx.bytes", "BPS"
-    );
+    if cli.ifname.is_empty() {
+        println!(
+            "{:8} {:9} {:8} {:8} Src.ip",
+            "No", "Rx.packet", "Rx.bytes", "BPS"
+        );
+    } else {
+        println!(
+            "{:8} {:9} {:8} {:8} Interface",
+            "No", "Rx.packet", "Rx.bytes", "BPS"
+        );
+    }
+
     for key in maps.keys() {
-        let index = NativeEndian::read_u32(&key);
-        if let Some(ifname) = interface::get_interfaces().into_iter().find_map(|i| {
-            if i.index == index {
-                Some(i.name)
-            } else {
-                None
-            }
-        }) {
-            if let Ok(Some(data)) = maps.lookup_percpu(&key, MapFlags::ANY) {
-                no += 1;
-                let mut rx_packets = 0;
-                let mut rx_bytes = 0;
+        if let Ok(Some(data)) = maps.lookup_percpu(&key, MapFlags::ANY) {
+            no += 1;
+            let mut rx_packets = 0;
+            let mut rx_bytes = 0;
 
-                for d in &data {
-                    let mut pi = PacketInfo::default();
-                    if let Err(_) = plain::copy_from_bytes(&mut pi, d) {
-                        return Err(JtraceError::InvalidData)
-                            .into_report()
-                            .change_context(JtraceError::InvalidData);
-                    }
-
-                    rx_packets += pi.rx_packets;
-                    rx_bytes += pi.rx_bytes;
+            for d in &data {
+                let mut pi = PacketInfo::default();
+                if let Err(_) = plain::copy_from_bytes(&mut pi, d) {
+                    return Err(JtraceError::InvalidData)
+                        .into_report()
+                        .change_context(JtraceError::InvalidData);
                 }
+
+                rx_packets += pi.rx_packets;
+                rx_bytes += pi.rx_bytes;
+            }
+
+            if !cli.ifname.is_empty() {
+                let ifindex = NativeEndian::read_u32(&key);
+                let interfaces = interface::get_interfaces();
+                let i = interfaces
+                    .iter()
+                    .find(|&i| i.index == ifindex)
+                    .ok_or(JtraceError::InvalidData)
+                    .into_report()?;
+                println!(
+                    "{:<8} {:<9} {:<8} {:<8} {}",
+                    no,
+                    rx_packets,
+                    rx_bytes,
+                    rx_bytes / time,
+                    i.name,
+                );
+            } else {
+                let ip = key
+                    .iter()
+                    .map(|&d| d.to_string())
+                    .collect::<Vec<String>>()
+                    .join(".");
 
                 println!(
                     "{:<8} {:<9} {:<8} {:<8} {}",
@@ -180,7 +218,7 @@ fn main() -> Result<(), JtraceError> {
                     rx_packets,
                     rx_bytes,
                     rx_bytes / time,
-                    ifname
+                    ip
                 );
             }
         }
