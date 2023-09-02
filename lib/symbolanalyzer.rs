@@ -2,7 +2,8 @@ use std::fmt::Display;
 
 #[allow(unused)]
 use {
-    error_stack::{IntoReport, Result, ResultExt},
+    error_stack::{IntoReport, Report, Result, ResultExt},
+    jlogger_tracing::{jdebug, jerror, jinfo, jwarn},
     std::error::Error,
 };
 
@@ -169,6 +170,7 @@ impl KernelMap {
                 .into_report()
                 .attach_printable(format!("No address found in line: `{}`", line))?
                 .trim();
+
             let addr = addr_str_to_u64(addr_str)?;
 
             let t = entries
@@ -177,6 +179,7 @@ impl KernelMap {
                 .into_report()
                 .attach_printable(format!("No symbol type found in line: `{}`", line))?
                 .trim();
+
             let ktype = match t {
                 "A" | "a" => NmSymbolType::Absolute,
                 "B" | "b" => NmSymbolType::BssData,
@@ -212,6 +215,17 @@ impl KernelMap {
                     .attach_printable(format!("No name found in line: `{}`", line))?
                     .trim(),
             );
+
+             // In case of loadable module name may be something like following
+             //   virtio_lo_add_pdev\t[virtio_lo]
+            let name = name
+                .split('\t')
+                .collect::<Vec<&str>>()
+                .first()
+                .ok_or(Report::new(SymbolAnalyzerError::InvalidSymbolFile))?
+                .to_string();
+
+            jdebug!(name=name);
 
             let mut module = String::new();
             if let Some(m) = entries.next() {
