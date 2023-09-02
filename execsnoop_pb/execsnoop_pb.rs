@@ -20,7 +20,6 @@ use {
 
 #[path = "bpf/execsnoop_pb.skel.rs"]
 mod execsnoop_pb;
-use error_stack::IntoReport;
 use execsnoop_pb::*;
 
 fn print_to_log(level: PrintLevel, msg: String) {
@@ -93,16 +92,14 @@ fn main() -> Result<(), JtraceError> {
 
     let mut open_skel = skel_builder
         .open()
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable("Failed to open bpf.")?;
 
     open_skel.rodata().min_duration_ns = cli.duration * 1000000_u64;
 
     let mut skel = open_skel
         .load()
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable("Failed to load bpf")?;
 
     let start = chrono::Local::now();
@@ -281,13 +278,11 @@ fn main() -> Result<(), JtraceError> {
         .sample_cb(handle_event)
         .pages(16) // 4k * 16
         .build()
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable("Failed to create perf buffer")?;
 
     skel.attach()
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable("Failed to load bpf")?;
 
     let print_timestamp_str = || {
@@ -332,8 +327,7 @@ fn main() -> Result<(), JtraceError> {
     ctrlc::set_handler(move || {
         r.store(false, Ordering::Release);
     })
-    .into_report()
-    .change_context(JtraceError::IOError)?;
+    .map_err(|_| Report::new(JtraceError::IOError))?;
 
     while running.load(Ordering::Acquire) {
         // ctrl-c will fail perfbuf.poll()

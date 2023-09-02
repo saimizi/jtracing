@@ -23,7 +23,6 @@ mod bash_readline;
 use std::time::Instant;
 
 use bash_readline::*;
-use error_stack::IntoReport;
 
 fn print_to_log(level: PrintLevel, msg: String) {
     match level {
@@ -68,14 +67,12 @@ fn main() -> Result<(), JtraceError> {
     let skel_builder = BashReadlineSkelBuilder::default();
     let open_skel = skel_builder
         .open()
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable("Failed to open bpf.")?;
 
     let mut skel = open_skel
         .load()
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable("Failed to load bpf")?;
 
     let handle_event = move |data: &[u8]| -> i32 {
@@ -98,12 +95,11 @@ fn main() -> Result<(), JtraceError> {
     let map = skel.maps();
     rbuilder
         .add(map.rb(), handle_event)
-        .into_report()
-        .change_context(JtraceError::IOError)?;
+        .map_err(|_| Report::new(JtraceError::IOError))?;
+
     let ringbuf = rbuilder
         .build()
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable("Failed to create ring buffer")?;
 
     let elf = ElfFile::new("/bin/bash").change_context(JtraceError::SymbolAnalyzerError)?;
@@ -119,8 +115,7 @@ fn main() -> Result<(), JtraceError> {
         .progs_mut()
         .uretprobe_readline()
         .attach_uprobe(true, -1, "/bin/bash", offset as usize)
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable("Failed to attach uprobe")?;
 
     let running = Arc::new(AtomicBool::new(true));
@@ -129,8 +124,7 @@ fn main() -> Result<(), JtraceError> {
     ctrlc::set_handler(move || {
         r.store(false, Ordering::Release);
     })
-    .into_report()
-    .change_context(JtraceError::IOError)?;
+    .map_err(|_| Report::new(JtraceError::IOError))?;
 
     let timeout = std::time::Duration::from_secs(cli.duration.unwrap_or(u64::MAX));
     let start = Instant::now();

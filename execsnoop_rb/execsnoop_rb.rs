@@ -20,7 +20,6 @@ use {
 
 #[path = "bpf/execsnoop_rb.skel.rs"]
 mod execsnoop_rb;
-use error_stack::IntoReport;
 use execsnoop_rb::*;
 
 fn print_to_log(level: PrintLevel, msg: String) {
@@ -93,16 +92,14 @@ fn main() -> Result<(), JtraceError> {
 
     let mut open_skel = skel_builder
         .open()
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable("Failed to open bpf.")?;
 
     open_skel.rodata().min_duration_ns = cli.duration * 1000000_u64;
 
     let mut skel = open_skel
         .load()
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable("Failed to load bpf")?;
 
     let start = chrono::Local::now();
@@ -283,17 +280,14 @@ fn main() -> Result<(), JtraceError> {
     let map = skel.maps();
     rbuilder
         .add(map.rb(), handle_event)
-        .into_report()
-        .change_context(JtraceError::IOError)?;
+        .map_err(|_| Report::new(JtraceError::IOError))?;
     let ringbuf = rbuilder
         .build()
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable("Failed to create ring buffer")?;
 
     skel.attach()
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable("Failed to load bpf")?;
 
     let print_timestamp_str = || {
@@ -338,8 +332,7 @@ fn main() -> Result<(), JtraceError> {
     ctrlc::set_handler(move || {
         r.store(false, Ordering::Release);
     })
-    .into_report()
-    .change_context(JtraceError::IOError)?;
+    .map_err(|_| Report::new(JtraceError::IOError))?;
 
     while running.load(Ordering::Acquire) {
         let _ = ringbuf.poll(std::time::Duration::from_millis(100));

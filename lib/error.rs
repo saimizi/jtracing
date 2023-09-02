@@ -1,6 +1,6 @@
 #[allow(unused)]
 use {
-    error_stack::{IntoReport, Report, Result, ResultExt},
+    error_stack::{Report, Result, ResultExt},
     jlogger_tracing::{
         jdebug, jerror, jinfo, jtrace, jwarn, JloggerBuilder, LevelFilter, LogTimeFormat,
     },

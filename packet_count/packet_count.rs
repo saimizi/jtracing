@@ -3,7 +3,7 @@ use {
     byteorder::NativeEndian,
     clap::Parser,
     default_net::{gateway, interface},
-    error_stack::{IntoReport, Report, Result, ResultExt},
+    error_stack::{Report, Result, ResultExt},
     jlogger_tracing::{
         jdebug, jerror, jinfo, jtrace, jwarn, JloggerBuilder, LevelFilter, LogTimeFormat,
     },
@@ -49,7 +49,7 @@ struct Cli {
 
     ///Show exit trace.
     #[clap(short, long)]
-    ifname: Vec<String>,
+    if_name: Vec<String>,
 }
 
 type PacketInfo = packet_count_bss_types::packet_info;
@@ -75,21 +75,19 @@ fn main() -> Result<(), JtraceError> {
 
     let open_skel = skel_builder
         .open()
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable("Failed to open bpf.")?;
 
     let mut skel = open_skel
         .load()
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable("Failed to load bpf")?;
 
     let mut links = vec![];
-    let mut ifnames = vec![];
+    let mut if_names = vec![];
 
     for i in interface::get_interfaces() {
-        if cli.ifname.is_empty() {
+        if cli.if_name.is_empty() {
             if let Ok(l) = skel
                 .progs_mut()
                 .xdp_stats_func1()
@@ -98,21 +96,20 @@ fn main() -> Result<(), JtraceError> {
                 links.push(l);
             }
         } else {
-            if cli.ifname.iter().any(|a| a == &i.name) {
-                ifnames.push(i.name);
+            if cli.if_name.iter().any(|a| a == &i.name) {
+                if_names.push(i.name);
                 links.push(
                     skel.progs_mut()
                         .xdp_stats_func2()
                         .attach_xdp(i.index as i32)
-                        .into_report()
-                        .change_context(JtraceError::BPFError)
+                        .map_err(|_| Report::new(JtraceError::BPFError))
                         .attach_printable("Failed to attach xdp program")?,
                 );
             }
         }
     }
 
-    if !cli.ifname.is_empty() && ifnames.is_empty() {
+    if !cli.if_name.is_empty() && if_names.is_empty() {
         jinfo!("No valid interface found.");
         return Ok(());
     }
@@ -123,8 +120,7 @@ fn main() -> Result<(), JtraceError> {
     ctrlc::set_handler(move || {
         r.store(false, Ordering::Release);
     })
-    .into_report()
-    .change_context(JtraceError::IOError)?;
+    .map_err(|_| Report::new(JtraceError::IOError))?;
 
     let timeout = Duration::from_secs(cli.duration.clone().unwrap_or(u64::MAX));
     let start = Instant::now();
@@ -132,11 +128,11 @@ fn main() -> Result<(), JtraceError> {
     if cli.duration.is_some() {
         jinfo!(
             "Tracing {} for {} secondes...",
-            ifnames.join(","),
+            if_names.join(","),
             cli.duration.clone().unwrap()
         );
     } else {
-        jinfo!("Tracing {}...", ifnames.join(","));
+        jinfo!("Tracing {}...", if_names.join(","));
     }
 
     while running.load(Ordering::Acquire) {
@@ -150,8 +146,7 @@ fn main() -> Result<(), JtraceError> {
 
     for link in links {
         link.detach()
-            .into_report()
-            .change_context(JtraceError::BPFError)?;
+            .map_err(|_| Report::new(JtraceError::BPFError))?;
     }
 
     let binding = skel.maps();
@@ -159,7 +154,7 @@ fn main() -> Result<(), JtraceError> {
     let mut no = 0;
 
     println!();
-    if cli.ifname.is_empty() {
+    if cli.if_name.is_empty() {
         println!(
             "{:8} {:9} {:8} {:8} Src.ip",
             "No", "Rx.packet", "Rx.bytes", "BPS"
@@ -180,23 +175,20 @@ fn main() -> Result<(), JtraceError> {
             for d in &data {
                 let mut pi = PacketInfo::default();
                 if let Err(_) = plain::copy_from_bytes(&mut pi, d) {
-                    return Err(JtraceError::InvalidData)
-                        .into_report()
-                        .change_context(JtraceError::InvalidData);
+                    return Err(Report::new(JtraceError::InvalidData));
                 }
 
                 rx_packets += pi.rx_packets;
                 rx_bytes += pi.rx_bytes;
             }
 
-            if !cli.ifname.is_empty() {
-                let ifindex = NativeEndian::read_u32(&key);
+            if !cli.if_name.is_empty() {
+                let if_index = NativeEndian::read_u32(&key);
                 let interfaces = interface::get_interfaces();
                 let i = interfaces
                     .iter()
-                    .find(|&i| i.index == ifindex)
-                    .ok_or(JtraceError::InvalidData)
-                    .into_report()?;
+                    .find(|&i| i.index == if_index)
+                    .ok_or(Report::new(JtraceError::InvalidData))?;
                 println!(
                     "{:<8} {:<9} {:<8} {:<8} {}",
                     no,

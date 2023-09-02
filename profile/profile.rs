@@ -1,7 +1,7 @@
 #[allow(unused)]
 use {
     clap::Parser,
-    error_stack::{IntoReport, Report, Result, ResultExt},
+    error_stack::{Report, Result, ResultExt},
     jlogger_tracing::{
         jdebug, jerror, jinfo, jtrace, jwarn, JloggerBuilder, LevelFilter, LogTimeFormat,
     },
@@ -104,8 +104,7 @@ fn main() -> Result<(), JtraceError> {
 
     let mut open_skel = skel_builder
         .open()
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable("Failed to open bpf.")?;
 
     if !cli.trace_idle {
@@ -118,8 +117,7 @@ fn main() -> Result<(), JtraceError> {
 
     let mut skel = open_skel
         .load()
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable("Failed to load bpf")?;
 
     let events: Rc<RefCell<Vec<Event>>> = Rc::new(RefCell::new(Vec::new()));
@@ -152,13 +150,11 @@ fn main() -> Result<(), JtraceError> {
     let skel_maps = skel.maps();
     builder
         .add(skel_maps.rb(), handle_event)
-        .into_report()
-        .change_context(JtraceError::BPFError)?;
+        .map_err(|_| Report::new(JtraceError::BPFError))?;
 
     let ringbuf = builder
         .build()
-        .into_report()
-        .change_context(JtraceError::BPFError)?;
+        .map_err(|_| Report::new(JtraceError::BPFError))?;
 
     let mut attrs = perf_sys::bindings::perf_event_attr {
         type_: perf_sys::bindings::PERF_TYPE_HARDWARE,
@@ -215,8 +211,7 @@ fn main() -> Result<(), JtraceError> {
             skel.progs_mut()
                 .do_perf_event()
                 .attach_perf_event(pfd)
-                .into_report()
-                .change_context(JtraceError::BPFError)?,
+                .map_err(|_| Report::new(JtraceError::BPFError))?,
         );
     }
 
@@ -226,8 +221,7 @@ fn main() -> Result<(), JtraceError> {
     ctrlc::set_handler(move || {
         r.store(false, Ordering::Release);
     })
-    .into_report()
-    .change_context(JtraceError::IOError)?;
+    .map_err(|_| Report::new(JtraceError::IOError))?;
 
     let timeout = cli
         .duration
@@ -281,8 +275,7 @@ pub fn process_data(
                 .write(true)
                 .read(true)
                 .open(file_name)
-                .into_report()
-                .change_context(JtraceError::IOError)?,
+                .map_err(|_| Report::new(JtraceError::IOError))?,
         );
     }
 
@@ -309,8 +302,7 @@ pub fn process_data(
                     "{:3} CPU:{} Comm:{} PID:{} TID:{}",
                     no, cpu, comm, pid, tid
                 )
-                .into_report()
-                .change_context(JtraceError::IOError)?;
+                .map_err(|_| Report::new(JtraceError::IOError))?;
             } else {
                 println!("{:3} CPU:{} Comm:{} PID:{} TID:{}", no, cpu, comm, pid, tid);
             }
@@ -323,8 +315,7 @@ pub fn process_data(
                         .unwrap_or("[unknown]".to_string());
                     if let Some(f) = &mut output_file {
                         writeln!(f, "    {:x}  {}", addr, p_name)
-                            .into_report()
-                            .change_context(JtraceError::IOError)?;
+                            .map_err(|_| Report::new(JtraceError::IOError))?;
                     } else {
                         println!("    {:x}  {}", addr, p_name);
                     }
@@ -333,9 +324,7 @@ pub fn process_data(
 
             if kstack_sz > 0 && ustack_sz > 0 {
                 if let Some(f) = &mut output_file {
-                    writeln!(f, "    ----")
-                        .into_report()
-                        .change_context(JtraceError::IOError)?;
+                    writeln!(f, "    ----").map_err(|_| Report::new(JtraceError::IOError))?;
                 } else {
                     println!("    ----");
                 }
@@ -356,8 +345,7 @@ pub fn process_data(
 
                     if let Some(f) = &mut output_file {
                         writeln!(f, "    {:x}(+{})  {} {}", addr, offset, p_name, file)
-                            .into_report()
-                            .change_context(JtraceError::IOError)?;
+                            .map_err(|_| Report::new(JtraceError::IOError))?;
                     } else {
                         println!("    {:x}(+{})  {} {}", addr, offset, p_name, file);
                     }
@@ -365,9 +353,7 @@ pub fn process_data(
             }
 
             if let Some(f) = &mut output_file {
-                writeln!(f)
-                    .into_report()
-                    .change_context(JtraceError::IOError)?;
+                writeln!(f).map_err(|_| Report::new(JtraceError::IOError))?;
             } else {
                 println!();
             }
@@ -423,11 +409,8 @@ pub fn process_data(
 
             if let Some(f) = &mut output_file {
                 f.write(fold_result.as_bytes())
-                    .into_report()
-                    .change_context(JtraceError::IOError)?;
-                f.flush()
-                    .into_report()
-                    .change_context(JtraceError::IOError)?;
+                    .map_err(|_| Report::new(JtraceError::IOError))?;
+                f.flush().map_err(|_| Report::new(JtraceError::IOError))?;
             } else {
                 println!("{}", fold_result);
             }

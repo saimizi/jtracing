@@ -1,5 +1,3 @@
-use error_stack::IntoReport;
-
 #[allow(unused)]
 use {
     crate::{trace_top_dir, writeln_proc, writeln_str_file, JtraceError},
@@ -86,8 +84,7 @@ impl Kprobe {
                 args: Vec::<String>::new(),
             })
         } else {
-            Err(JtraceError::InvalidData)
-                .into_report()
+            Err(Report::new(JtraceError::InvalidData))
                 .attach_printable("Tracing directory not found.")
         }
     }
@@ -109,8 +106,7 @@ impl Kprobe {
             let entry = format!("p:{}/{} {}", self.group, self.fname, self.fname);
 
             if probes.contains(&entry) {
-                return Err(JtraceError::InvalidData)
-                    .into_report()
+                return Err(Report::new(JtraceError::InvalidData))
                     .attach_printable(format!("{} kprobe already added", self.group));
             }
 

@@ -18,7 +18,6 @@ pub mod symbolanalyzer;
 pub mod tracelog;
 
 pub use error::JtraceError;
-use error_stack::IntoReport;
 pub use kprobe::Kprobe;
 pub use symbolanalyzer::ElfFile;
 pub use symbolanalyzer::ExecMap;
@@ -30,9 +29,7 @@ pub use tracelog::TraceLog;
 
 pub fn writeln_proc(f: &str, s: &str, append: bool) -> Result<(), JtraceError> {
     unsafe {
-        let c_file = CString::new(f)
-            .into_report()
-            .change_context(JtraceError::InvalidData)?;
+        let c_file = CString::new(f).map_err(|_| Report::new(JtraceError::InvalidData))?;
         let mut mode = CString::new("w").unwrap();
         if append {
             mode = CString::new("a").unwrap();
@@ -40,19 +37,15 @@ pub fn writeln_proc(f: &str, s: &str, append: bool) -> Result<(), JtraceError> {
         let fp = libc::fopen(c_file.as_ptr(), mode.as_ptr());
 
         if fp.is_null() {
-            return Err(JtraceError::IOError)
-                .into_report()
-                .attach_printable(format!(
-                    "Failed to open {} to write {} ({})",
-                    f,
-                    s,
-                    std::io::Error::last_os_error()
-                ));
+            return Err(Report::new(JtraceError::IOError)).attach_printable(format!(
+                "Failed to open {} to write {} ({})",
+                f,
+                s,
+                std::io::Error::last_os_error()
+            ));
         }
 
-        let c_buf = CString::new(s)
-            .into_report()
-            .change_context(JtraceError::InvalidData)?;
+        let c_buf = CString::new(s).map_err(|_| Report::new(JtraceError::InvalidData))?;
         let ret = libc::fwrite(
             c_buf.as_ptr() as *const libc::c_void,
             c_buf.as_bytes().len(),
@@ -61,13 +54,11 @@ pub fn writeln_proc(f: &str, s: &str, append: bool) -> Result<(), JtraceError> {
         ) as i32;
 
         if ret < 0 {
-            return Err(JtraceError::IOError)
-                .into_report()
-                .attach_printable(format!(
-                    "Failed to write {} ({})",
-                    f,
-                    std::io::Error::last_os_error()
-                ));
+            return Err(Report::new(JtraceError::IOError)).attach_printable(format!(
+                "Failed to write {} ({})",
+                f,
+                std::io::Error::last_os_error()
+            ));
         }
     }
     Ok(())
@@ -77,8 +68,7 @@ pub fn writeln_str_file(f: &str, s: &str, append: bool) -> Result<(), JtraceErro
     let fp = Path::new(f);
 
     if !fp.is_file() {
-        return Err(JtraceError::InvalidData)
-            .into_report()
+        return Err(Report::new(JtraceError::InvalidData))
             .attach_printable(format!("File {} not exist.", f));
     }
 
@@ -86,8 +76,7 @@ pub fn writeln_str_file(f: &str, s: &str, append: bool) -> Result<(), JtraceErro
         .write(true)
         .append(append)
         .open(fp)
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable(format!("Failed to open {}", f))?;
 
     let mut ns = String::from(s);
@@ -103,14 +92,12 @@ pub fn writeln_str_file(f: &str, s: &str, append: bool) -> Result<(), JtraceErro
 
     writer
         .write(ns.as_bytes())
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable(format!("Failed write {} to {}", ns, f))?;
 
     writer
         .flush()
-        .into_report()
-        .change_context(JtraceError::IOError)
+        .map_err(|_| Report::new(JtraceError::IOError))
         .attach_printable(format!("Failed write {} to {}", ns, f))?;
 
     Ok(())
@@ -124,8 +111,7 @@ pub fn trace_top_dir() -> Result<&'static str, JtraceError> {
         let file = fs::OpenOptions::new()
             .read(true)
             .open(Path::new("/proc/mounts"))
-            .into_report()
-            .change_context(JtraceError::IOError)?;
+            .map_err(|_| Report::new(JtraceError::IOError))?;
         let mut lines = BufReader::new(file).lines();
 
         while let Some(Ok(l)) = lines.next() {
@@ -144,9 +130,7 @@ pub fn trace_top_dir() -> Result<&'static str, JtraceError> {
     }
 
     if top.is_null() {
-        Err(JtraceError::InvalidData)
-            .into_report()
-            .attach_printable("trace top directory not found")
+        Err(Report::new(JtraceError::InvalidData)).attach_printable("trace top directory not found")
     } else {
         Ok(unsafe { &*top })
     }
@@ -161,9 +145,8 @@ pub fn tracepoints() -> Result<&'static str, JtraceError> {
         let mut events_dir = trace_top_dir()?.to_string();
         events_dir.push_str("/events");
 
-        let mut path_dir = fs::read_dir(events_dir)
-            .into_report()
-            .change_context(JtraceError::IOError)?;
+        let mut path_dir =
+            fs::read_dir(events_dir).map_err(|_| Report::new(JtraceError::IOError))?;
 
         while let Some(Ok(entry)) = path_dir.next() {
             if let Ok(d) = entry.file_type() {
@@ -183,7 +166,7 @@ pub fn tracepoints() -> Result<&'static str, JtraceError> {
 
                                 if let Some(tp) = entry.file_name().to_str() {
                                     let tracepoint = format!("{}:{}\n", category, tp);
-                                    jdebug!("find tracepoint {}", tracepoint);
+                                    //jdebug!("find tracepoint {}", tracepoint);
                                     trace_points.push_str(&tracepoint);
                                 }
                             }
@@ -201,9 +184,7 @@ pub fn tracepoints() -> Result<&'static str, JtraceError> {
     if !tracepoints.is_null() {
         Ok(unsafe { &*tracepoints })
     } else {
-        Err(JtraceError::InvalidData)
-            .into_report()
-            .attach_printable("Trace points are not found.")
+        Err(Report::new(JtraceError::InvalidData)).attach_printable("Trace points are not found.")
     }
 }
 

@@ -1,7 +1,7 @@
 #[allow(unused)]
 use {
     clap::Parser,
-    error_stack::{IntoReport, Result, ResultExt},
+    error_stack::{Report, Result, ResultExt},
     jlogger_tracing::{
         jdebug, jerror, jinfo, jtrace, jwarn, JloggerBuilder, LevelFilter, LogTimeFormat,
     },
@@ -212,8 +212,7 @@ fn main() -> Result<(), EGLSwapBuffersError> {
 
     let mut open_skel = skel_builder
         .open()
-        .into_report()
-        .change_context(EGLSwapBuffersError::BPFError)
+        .map_err(|_| Report::new(EGLSwapBuffersError::BPFError))
         .attach_printable("Failed to open bpf")?;
 
     if let Some(pid) = cli.pid {
@@ -224,8 +223,7 @@ fn main() -> Result<(), EGLSwapBuffersError> {
 
     let mut skel = open_skel
         .load()
-        .into_report()
-        .change_context(EGLSwapBuffersError::BPFError)
+        .map_err(|_| Report::new(EGLSwapBuffersError::BPFError))
         .attach_printable("Failed to load bpf")?;
 
     let mut links = vec![];
@@ -261,8 +259,7 @@ fn main() -> Result<(), EGLSwapBuffersError> {
         .progs_mut()
         .swap_trace()
         .attach_uprobe(false, -1, file.clone(), offset)
-        .into_report()
-        .change_context(EGLSwapBuffersError::BPFError)
+        .map_err(|_| Report::new(EGLSwapBuffersError::BPFError))
         .attach_printable("Failed to attach eglSwapBuffers().".to_string())?;
 
     links.push(link);
@@ -274,8 +271,7 @@ fn main() -> Result<(), EGLSwapBuffersError> {
     ctrlc::set_handler(move || {
         r.store(false, Ordering::Release);
     })
-    .into_report()
-    .change_context(EGLSwapBuffersError::Unexpected)?;
+    .map_err(|_| Report::new(EGLSwapBuffersError::Unexpected))?;
 
     if cli.duration > 0 {
         println!(

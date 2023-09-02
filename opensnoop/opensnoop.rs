@@ -1,5 +1,3 @@
-use error_stack::IntoReport;
-
 #[allow(unused)]
 use {
     clap::Parser,
@@ -51,18 +49,15 @@ async fn wait_to_finish(start: Instant, duration_s: Option<u64>) -> Result<(), J
         if !to.is_zero() {
             timeout(to, wait_ctrc)
                 .await
-                .into_report()
-                .change_context(JtraceError::IOError)?
-                .into_report()
-                .change_context(JtraceError::IOError)
+                .map_err(|_| Report::new(JtraceError::IOError))?
+                .map_err(|_| Report::new(JtraceError::IOError))
         } else {
             Ok(())
         }
     } else {
         signal::ctrl_c()
             .await
-            .into_report()
-            .change_context(JtraceError::IOError)
+            .map_err(|_| Report::new(JtraceError::IOError))
     }
 }
 

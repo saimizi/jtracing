@@ -2,7 +2,7 @@
 use {
     byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt},
     clap::Parser,
-    error_stack::{IntoReport, Result, ResultExt},
+    error_stack::{Report, Result, ResultExt},
     jlogger_tracing::{
         jdebug, jerror, jinfo, jtrace, jwarn, JloggerBuilder, LevelFilter, LogTimeFormat,
     },
@@ -137,8 +137,7 @@ fn main() -> Result<(), JtraceError> {
     let skel_builder = MallocFreeSkelBuilder::default();
     let mut open_skel = skel_builder
         .open()
-        .into_report()
-        .change_context(JtraceError::BPFError)
+        .map_err(|_| Report::new(JtraceError::BPFError))
         .attach_printable("Failed to open bpf")?;
 
     if let Some(pid) = cli.pid {
@@ -149,8 +148,7 @@ fn main() -> Result<(), JtraceError> {
 
     let mut skel = open_skel
         .load()
-        .into_report()
-        .change_context(JtraceError::BPFError)
+        .map_err(|_| Report::new(JtraceError::BPFError))
         .attach_printable("Failed to load bpf")?;
 
     let mut links = vec![];
@@ -179,8 +177,7 @@ fn main() -> Result<(), JtraceError> {
         skel.progs_mut()
             .uprobe_malloc()
             .attach_uprobe(false, -1, file.clone(), malloc_offset)
-            .into_report()
-            .change_context(JtraceError::SymbolAnalyzerError)
+            .map_err(|_| Report::new(JtraceError::SymbolAnalyzerError))
             .attach_printable("Failed to attach eglSwapBuffers().".to_string())?,
     );
 
@@ -188,8 +185,7 @@ fn main() -> Result<(), JtraceError> {
         skel.progs_mut()
             .uretprobe_malloc()
             .attach_uprobe(true, -1, file.clone(), malloc_offset)
-            .into_report()
-            .change_context(JtraceError::SymbolAnalyzerError)
+            .map_err(|_| Report::new(JtraceError::SymbolAnalyzerError))
             .attach_printable("Failed to attach eglSwapBuffers().".to_string())?,
     );
 
@@ -197,8 +193,7 @@ fn main() -> Result<(), JtraceError> {
         skel.progs_mut()
             .uprobe_free()
             .attach_uprobe(false, -1, file.clone(), free_offset)
-            .into_report()
-            .change_context(JtraceError::SymbolAnalyzerError)
+            .map_err(|_| Report::new(JtraceError::SymbolAnalyzerError))
             .attach_printable("Failed to attach eglSwapBuffers().".to_string())?,
     );
 
@@ -209,8 +204,7 @@ fn main() -> Result<(), JtraceError> {
     ctrlc::set_handler(move || {
         r.store(false, Ordering::Release);
     })
-    .into_report()
-    .change_context(JtraceError::UnExpected)?;
+    .map_err(|_| Report::new(JtraceError::UnExpected))?;
 
     if cli.duration > 0 {
         println!(
@@ -218,7 +212,7 @@ fn main() -> Result<(), JtraceError> {
             file, cli.duration
         );
     } else {
-        println!("Tracing maloc() in {}... Type Ctrl-C to stop.", file);
+        println!("Tracing malloc() in {}... Type Ctrl-C to stop.", file);
     }
 
     while running.load(Ordering::Acquire) {

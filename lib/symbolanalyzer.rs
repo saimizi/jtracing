@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 #[allow(unused)]
 use {
-    error_stack::{IntoReport, Report, Result, ResultExt},
+    error_stack::{Report, Result, ResultExt},
     jlogger_tracing::{jdebug, jerror, jinfo, jwarn},
     std::error::Error,
 };
@@ -140,15 +140,13 @@ impl KernelMap {
             fs::OpenOptions::new()
                 .read(true)
                 .open(sf)
-                .into_report()
-                .change_context(SymbolAnalyzerError::InvalidSymbolFile)
+                .map_err(|_| Report::new(SymbolAnalyzerError::InvalidSymbolFile))
                 .attach_printable(format!("Invalid symbol file: {}", sf))?
         } else {
             fs::OpenOptions::new()
                 .read(true)
                 .open("/proc/kallsyms")
-                .into_report()
-                .change_context(SymbolAnalyzerError::NoKallsymsFile)?
+                .map_err(|_| Report::new(SymbolAnalyzerError::NoKallsymsFile))?
         };
 
         let mut reader = BufReader::new(f);
@@ -166,8 +164,7 @@ impl KernelMap {
 
             let addr_str = entries
                 .next()
-                .ok_or(SymbolAnalyzerError::InvalidSymbolFile)
-                .into_report()
+                .ok_or(Report::new(SymbolAnalyzerError::InvalidSymbolFile))
                 .attach_printable(format!("No address found in line: `{}`", line))?
                 .trim();
 
@@ -175,8 +172,7 @@ impl KernelMap {
 
             let t = entries
                 .next()
-                .ok_or(SymbolAnalyzerError::InvalidSymbolFile)
-                .into_report()
+                .ok_or(Report::new(SymbolAnalyzerError::InvalidSymbolFile))
                 .attach_printable(format!("No symbol type found in line: `{}`", line))?
                 .trim();
 
@@ -201,8 +197,7 @@ impl KernelMap {
                 "-" => NmSymbolType::StabsSymbol,
                 "?" => NmSymbolType::Unknown,
                 _ => {
-                    return Err(SymbolAnalyzerError::InvalidSymbolFile)
-                        .into_report()
+                    return Err(Report::new(SymbolAnalyzerError::InvalidSymbolFile))
                         .attach_printable(format!("Invalid type {}", t))
                 }
             };
@@ -210,14 +205,13 @@ impl KernelMap {
             let name = String::from(
                 entries
                     .next()
-                    .ok_or(SymbolAnalyzerError::InvalidSymbolFile)
-                    .into_report()
+                    .ok_or(Report::new(SymbolAnalyzerError::InvalidSymbolFile))
                     .attach_printable(format!("No name found in line: `{}`", line))?
                     .trim(),
             );
 
-             // In case of loadable module name may be something like following
-             //   virtio_lo_add_pdev\t[virtio_lo]
+            // In case of loadable module name may be something like following
+            //   virtio_lo_add_pdev\t[virtio_lo]
             let name = name
                 .split('\t')
                 .collect::<Vec<&str>>()
@@ -225,7 +219,7 @@ impl KernelMap {
                 .ok_or(Report::new(SymbolAnalyzerError::InvalidSymbolFile))?
                 .to_string();
 
-            jdebug!(name=name);
+            jdebug!(name = name);
 
             let mut module = String::new();
             if let Some(m) = entries.next() {
@@ -278,11 +272,9 @@ impl KernelMap {
 
         match search_symbol(&self.kallsyms, 0, self.kallsyms.len(), addr) {
             Symbol::Symbol(s) => Ok(s),
-            Symbol::TooSmall => Err(SymbolAnalyzerError::SymbolNotFound)
-                .into_report()
+            Symbol::TooSmall => Err(Report::new(SymbolAnalyzerError::SymbolNotFound))
                 .attach_printable(format!("Address {} is too small", addr)),
-            Symbol::TooLarge => Err(SymbolAnalyzerError::SymbolNotFound)
-                .into_report()
+            Symbol::TooLarge => Err(Report::new(SymbolAnalyzerError::SymbolNotFound))
                 .attach_printable(format!("Address {} is too large", addr)),
         }
     }
@@ -306,8 +298,7 @@ impl ExecMap {
         let map = fs::OpenOptions::new()
             .read(true)
             .open(format!("/proc/{}/maps", pid))
-            .into_report()
-            .change_context(SymbolAnalyzerError::FailedReadMap)
+            .map_err(|_| Report::new(SymbolAnalyzerError::FailedReadMap))
             .attach_printable(format!("Failed to read /proc/{}/maps", pid))?;
 
         let mut reader = BufReader::new(map);
@@ -316,8 +307,8 @@ impl ExecMap {
         // 7fadf15000-7fadf1c000 r-xp 00000000 b3:02 12147                          /usr/lib/libipcon.so.0.0.0
         let re = Regex::new(
             r"^([0-9|a-f]+)-([0-9|a-f]+) r\-xp ([0-9|a-f]+ [0-9|a-f|:]+ [0-9]+ +)(/[a-z|A-Z|0-9|\.|\-|_|/|:]+.*)\n$",
-        ).into_report()
-            .change_context(SymbolAnalyzerError::Unexpected)
+        )
+            .map_err(|_| Report::new(SymbolAnalyzerError::Unexpected))
             .attach_printable("Failed to build Regex")?;
 
         loop {
@@ -325,8 +316,7 @@ impl ExecMap {
 
             let len = reader
                 .read_line(&mut l)
-                .into_report()
-                .change_context(SymbolAnalyzerError::Unexpected)
+                .map_err(|_| Report::new(SymbolAnalyzerError::Unexpected))
                 .attach_printable(format!("Failed to read /proc/{}/maps", pid))?;
 
             if len == 0 {
@@ -373,12 +363,10 @@ impl ExecMap {
             }
         }
 
-        Err(SymbolAnalyzerError::InvalidAddress)
-            .into_report()
-            .attach_printable(format!(
-                "Invalid addr {:x} for pid {}. Available range: {}",
-                addr, self.pid, keys
-            ))
+        Err(Report::new(SymbolAnalyzerError::InvalidAddress)).attach_printable(format!(
+            "Invalid addr {:x} for pid {}. Available range: {}",
+            addr, self.pid, keys
+        ))
     }
 }
 
@@ -396,18 +384,15 @@ pub fn addr_str_to_u64(addr_str: &str) -> Result<u64, SymbolAnalyzerError> {
     }
 
     let bytes = hex::decode(&fixed_str)
-        .into_report()
-        .change_context(SymbolAnalyzerError::InvalidAddress)
+        .map_err(|_| Report::new(SymbolAnalyzerError::InvalidAddress))
         .attach_printable(format!("Invalid address {}", fixed_str))?;
 
     if bytes.len() > 8 {
-        return Err(SymbolAnalyzerError::InvalidAddress)
-            .into_report()
-            .attach_printable(format!(
-                "Invalid address {} bytes len: {}",
-                addr_str,
-                bytes.len()
-            ));
+        return Err(Report::new(SymbolAnalyzerError::InvalidAddress)).attach_printable(format!(
+            "Invalid address {} bytes len: {}",
+            addr_str,
+            bytes.len()
+        ));
     }
 
     u8array[8 - bytes.len()..].clone_from_slice(&bytes[..]);
@@ -480,31 +465,26 @@ impl ElfFile {
     pub fn new(file_name: &str) -> Result<Self, SymbolAnalyzerError> {
         let mut fpathbuf = Path::new(file_name)
             .canonicalize()
-            .into_report()
-            .change_context(SymbolAnalyzerError::InvalidElfFile)
+            .map_err(|_| Report::new(SymbolAnalyzerError::InvalidElfFile))
             .attach_printable(format!("Invalid ELF file: {}", file_name))?;
 
         if fpathbuf.is_symlink() {
             fpathbuf = fs::read_link(fpathbuf)
-                .into_report()
-                .change_context(SymbolAnalyzerError::InvalidElfFile)
+                .map_err(|_| Report::new(SymbolAnalyzerError::InvalidElfFile))
                 .attach_printable(format!("Invalid ELF file: {}", file_name))?
                 .canonicalize()
-                .into_report()
-                .change_context(SymbolAnalyzerError::InvalidElfFile)
+                .map_err(|_| Report::new(SymbolAnalyzerError::InvalidElfFile))
                 .attach_printable(format!("Invalid ELF file: {}", file_name))?;
         }
 
         let fpath = fpathbuf.as_path();
         if !fpath.is_file() {
-            return Err(SymbolAnalyzerError::InvalidElfFile)
-                .into_report()
+            return Err(Report::new(SymbolAnalyzerError::InvalidElfFile))
                 .attach_printable(format!("Invalid ELF binary : {}", file_name));
         }
 
         let file = fs::File::open(fpath)
-            .into_report()
-            .change_context(SymbolAnalyzerError::InvalidElfFile)
+            .map_err(|_| Report::new(SymbolAnalyzerError::InvalidElfFile))
             .attach_printable(format!("Failed to open {}", file_name))?;
 
         let mut files = vec![file];
@@ -515,14 +495,12 @@ impl ElfFile {
 
             let map = unsafe {
                 memmap::Mmap::map(&file)
-                    .into_report()
-                    .change_context(SymbolAnalyzerError::Unexpected)
+                    .map_err(|_| Report::new(SymbolAnalyzerError::Unexpected))
                     .attach_printable(format!("Failed to map {}", file_name))?
             };
 
             let object = object::File::parse(&map[..])
-                .into_report()
-                .change_context(SymbolAnalyzerError::Unexpected)
+                .map_err(|_| Report::new(SymbolAnalyzerError::Unexpected))
                 .attach_printable(format!("Failed to parse {}", file_name))?;
 
             if let Ok(Some((lfn, _crc))) = object.gnu_debuglink() {
@@ -531,8 +509,7 @@ impl ElfFile {
                     if plf.is_file() {
                         new_files.push(
                             fs::File::open(lf.clone())
-                                .into_report()
-                                .change_context(SymbolAnalyzerError::Unexpected)
+                                .map_err(|_| Report::new(SymbolAnalyzerError::Unexpected))
                                 .attach_printable(format!("Failed to open {}", lf))?,
                         );
                     } else if let Some(d) = fpath.to_path_buf().parent() {
@@ -542,8 +519,7 @@ impl ElfFile {
                         if debug_file.is_file() {
                             new_files.push(
                                 fs::File::open(debug_file.clone())
-                                    .into_report()
-                                    .change_context(SymbolAnalyzerError::Unexpected)
+                                    .map_err(|_| Report::new(SymbolAnalyzerError::Unexpected))
                                     .attach_printable(format!(
                                         "Failed to open {}",
                                         debug_file.to_string_lossy()
@@ -600,8 +576,7 @@ impl ElfFile {
             }
         }
 
-        Err(SymbolAnalyzerError::SymbolNotFound)
-            .into_report()
+        Err(Report::new(SymbolAnalyzerError::SymbolNotFound))
             .attach_printable(format!("Address 0x{:x} Not Found.", addr))
     }
 
@@ -609,8 +584,7 @@ impl ElfFile {
         let entry = self
             .sym_addr
             .get(sym)
-            .ok_or(SymbolAnalyzerError::SymbolNotFound)
-            .into_report()
+            .ok_or(Report::new(SymbolAnalyzerError::SymbolNotFound))
             .attach_printable(format!("Symbol {} Not Found.", sym))?;
         Ok(entry.start())
     }
