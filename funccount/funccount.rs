@@ -18,8 +18,8 @@ use {
     std::fmt::Display,
     std::{
         collections::HashMap,
-        fs,
-        io::{BufRead, BufReader},
+        fs::{self, File},
+        io::{self, BufRead, BufReader, BufWriter},
         path::Path,
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -35,6 +35,8 @@ use {
 
 #[path = "bpf/funccount.skel.rs"]
 mod funccount;
+use std::io::Write;
+
 use funccount::*;
 
 #[derive(Debug)]
@@ -121,6 +123,10 @@ struct Cli {
     ///one symbol per line
     #[clap(short = 'l', long)]
     list_tracepoints: bool,
+
+    ///Log file to store output.
+    #[clap(short, long)]
+    output: Option<String>,
 
     #[clap()]
     args: Vec<String>,
@@ -302,14 +308,33 @@ fn process_events(
 fn print_result(cli: &Cli, result: &mut TraceResult, runtime_s: u64) -> Result<(), FuncCountError> {
     let runtime_s = if runtime_s == 0 { 1 } else { runtime_s };
 
-    println!();
+    let mut log_file = cli.output.clone().map(|f| File::create(f).ok()).flatten();
+    let need_newline = log_file.is_none();
+    let mut write_log = |msg: String| {
+        if let Some(f) = &mut log_file {
+            f.write_all(msg.as_bytes())?;
+            f.write_all("\n".as_bytes())
+        } else {
+            io::stdout().write_all(msg.as_bytes())?;
+            io::stdout().write_all("\n".as_bytes())
+        }
+    };
+
+    if need_newline {
+        println!();
+    }
 
     let show_limit = cli.count.unwrap_or(u32::MAX);
 
     if !result.exec.is_empty() {
         let mut show_count = 0;
 
-        println!("{:<12} {:<5} {:20} ", "Timestamp", "PID", "Command");
+        write_log(format!(
+            "{:<12} {:<5} {:20} ",
+            "Timestamp", "PID", "Command"
+        ))
+        .map_err(|_| Report::new(FuncCountError::Unexpected))?;
+
         let mut ts_previous = 0_u64;
         for event in &result.exec {
             let ts = event.ts / 1000;
@@ -326,13 +351,14 @@ fn print_result(cli: &Cli, result: &mut TraceResult, runtime_s: u64) -> Result<(
                 ts_show = ts;
             }
 
-            println!(
+            write_log(format!(
                 "{:<12.6} {:<5} {:20} {}",
                 ts_show as f64 / 1000000_f64,
                 event.pid,
                 event.comm,
                 event.probe
-            );
+            ))
+            .map_err(|_| Report::new(FuncCountError::Unexpected))?;
 
             show_count += 1;
             if show_count >= show_limit {
@@ -350,16 +376,19 @@ fn print_result(cli: &Cli, result: &mut TraceResult, runtime_s: u64) -> Result<(
             let mut total_cnt = 0;
             result_stack.iter().for_each(|a| total_cnt += a.cnt);
 
-            println!(
+            write_log(format!(
                 "PROBE: {} COUNTS: {}, {} COUNTS/s",
                 probe_name,
                 total_cnt,
                 total_cnt / runtime_s
-            );
-            println!(
+            ))
+            .map_err(|_| Report::new(FuncCountError::Unexpected))?;
+
+            write_log(format!(
                 "  {:<5} {:20} {:<8} {:9} {:9}",
                 "PID", "COMMAND", "COUNTS", "PERCENT", "COUNTS/s"
-            );
+            ))
+            .map_err(|_| Report::new(FuncCountError::Unexpected))?;
 
             if !cli.stack {
                 let mut pid_cnt = HashMap::new();
@@ -374,14 +403,15 @@ fn print_result(cli: &Cli, result: &mut TraceResult, runtime_s: u64) -> Result<(
                 }
 
                 for (_, (pid, (comm, cnt))) in pid_cnt.iter().enumerate() {
-                    println!(
+                    write_log(format!(
                         "  {:<5} {:20} {:<8} {:5.2}% {:9}",
                         pid,
                         comm,
                         cnt,
                         (*cnt as f64 / total_cnt as f64) * 100_f64,
                         cnt / runtime_s
-                    );
+                    ))
+                    .map_err(|_| Report::new(FuncCountError::Unexpected))?;
                 }
             } else {
                 for event in result_stack {
@@ -389,21 +419,24 @@ fn print_result(cli: &Cli, result: &mut TraceResult, runtime_s: u64) -> Result<(
                     let comm = unsafe { bytes_to_string(event.stack.comm.as_ptr()) };
                     let cnt = event.cnt;
 
-                    println!(
+                    write_log(format!(
                         "{:<5} {:20} {:<8} {:5.2}% {:9}",
                         pid,
                         comm,
                         cnt,
                         (cnt as f64 / total_cnt as f64) * 100_f64,
                         cnt / runtime_s
-                    );
+                    ))
+                    .map_err(|_| Report::new(FuncCountError::Unexpected))?;
 
                     let mut fno = 0;
                     for (addr, sym) in event.kstack.iter() {
                         if cli.addr {
-                            println!("    {:3} {:20x} {}", fno, addr, sym);
+                            write_log(format!("    {:3} {:20x} {}", fno, addr, sym))
+                                .map_err(|_| Report::new(FuncCountError::Unexpected))?;
                         } else {
-                            println!("    {:3} {}", fno, sym);
+                            write_log(format!("    {:3} {}", fno, sym))
+                                .map_err(|_| Report::new(FuncCountError::Unexpected))?;
                         }
 
                         fno -= 1;
@@ -416,9 +449,14 @@ fn print_result(cli: &Cli, result: &mut TraceResult, runtime_s: u64) -> Result<(
                         }
 
                         if cli.addr {
-                            println!("    {:3} {:20x} {} {}", fno, addr, symbol, filename_str);
+                            write_log(format!(
+                                "    {:3} {:20x} {} {}",
+                                fno, addr, symbol, filename_str
+                            ))
+                            .map_err(|_| Report::new(FuncCountError::Unexpected))?;
                         } else {
-                            println!("    {:3} {} {}", fno, symbol, filename_str);
+                            write_log(format!("    {:3} {} {}", fno, symbol, filename_str))
+                                .map_err(|_| Report::new(FuncCountError::Unexpected))?;
                         }
 
                         fno -= 1;
@@ -431,7 +469,7 @@ fn print_result(cli: &Cli, result: &mut TraceResult, runtime_s: u64) -> Result<(
                 }
             }
 
-            println!();
+            write_log("".to_string()).map_err(|_| Report::new(FuncCountError::Unexpected))?;
         }
 
         return Ok(());
