@@ -1,6 +1,5 @@
 #[allow(unused)]
 use {
-    cc,
     jlogger_tracing::{
         jdebug, jerror, jinfo, jtrace, jwarn, JloggerBuilder, LevelFilter, LogTimeFormat,
     },

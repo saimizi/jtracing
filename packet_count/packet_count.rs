@@ -95,17 +95,15 @@ fn main() -> Result<(), JtraceError> {
             {
                 links.push(l);
             }
-        } else {
-            if cli.if_name.iter().any(|a| a == &i.name) {
-                if_names.push(i.name);
-                links.push(
-                    skel.progs_mut()
-                        .xdp_stats_func2()
-                        .attach_xdp(i.index as i32)
-                        .map_err(|_| Report::new(JtraceError::BPFError))
-                        .attach_printable("Failed to attach xdp program")?,
-                );
-            }
+        } else if cli.if_name.iter().any(|a| a == &i.name) {
+            if_names.push(i.name);
+            links.push(
+                skel.progs_mut()
+                    .xdp_stats_func2()
+                    .attach_xdp(i.index as i32)
+                    .map_err(|_| Report::new(JtraceError::BPFError))
+                    .attach_printable("Failed to attach xdp program")?,
+            );
         }
     }
 
@@ -122,14 +120,14 @@ fn main() -> Result<(), JtraceError> {
     })
     .map_err(|_| Report::new(JtraceError::IOError))?;
 
-    let timeout = Duration::from_secs(cli.duration.clone().unwrap_or(u64::MAX));
+    let timeout = Duration::from_secs(cli.duration.unwrap_or(u64::MAX));
     let start = Instant::now();
 
     if cli.duration.is_some() {
         jinfo!(
             "Tracing {} for {} secondes...",
             if_names.join(","),
-            cli.duration.clone().unwrap()
+            cli.duration.unwrap()
         );
     } else {
         jinfo!("Tracing {}...", if_names.join(","));
@@ -174,7 +172,7 @@ fn main() -> Result<(), JtraceError> {
 
             for d in &data {
                 let mut pi = PacketInfo::default();
-                if let Err(_) = plain::copy_from_bytes(&mut pi, d) {
+                if plain::copy_from_bytes(&mut pi, d).is_err() {
                     return Err(Report::new(JtraceError::InvalidData));
                 }
 

@@ -308,7 +308,7 @@ fn process_events(
 fn print_result(cli: &Cli, result: &mut TraceResult, runtime_s: u64) -> Result<(), FuncCountError> {
     let runtime_s = if runtime_s == 0 { 1 } else { runtime_s };
 
-    let mut log_file = cli.output.clone().map(|f| File::create(f).ok()).flatten();
+    let mut log_file = cli.output.clone().and_then(|f| File::create(f).ok());
     let need_newline = log_file.is_none();
     let mut write_log = |msg: String| {
         if let Some(f) = &mut log_file {
