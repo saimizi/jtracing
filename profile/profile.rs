@@ -219,7 +219,11 @@ fn main() -> Result<(), JtraceError> {
     let r = running.clone();
 
     ctrlc::set_handler(move || {
-        r.store(false, Ordering::Release);
+        if r.load(Ordering::Acquire) {
+            r.store(false, Ordering::Release);
+        } else {
+            std::process::exit(0);
+        }
     })
     .map_err(|_| Report::new(JtraceError::IOError))?;
 
