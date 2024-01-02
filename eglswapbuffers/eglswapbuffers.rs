@@ -1,6 +1,6 @@
 #[allow(unused)]
 use {
-    clap::Parser,
+    clap::{Args, Parser},
     error_stack::{Report, Result, ResultExt},
     jlogger_tracing::{
         jdebug, jerror, jinfo, jtrace, jwarn, JloggerBuilder, LevelFilter, LogTimeFormat,
@@ -69,16 +69,15 @@ struct Cli {
     duration: u64,
 
     ///Verbose.
-    #[clap(short, long, parse(from_occurrences))]
+    #[clap(short, long, action=clap::ArgAction::Count)]
     verbose: usize,
 
     ///Show raw count
     #[clap(short = 'r', long)]
     raw: bool,
 
-    ///Trace glXSwapBuffers()
-    #[clap(short = 'g', long)]
-    glx: bool,
+    #[command(flatten)]
+    swap_type: SwapType,
 
     ///Only trace process with specified PID.
     #[clap(short = 'p', long)]
@@ -89,18 +88,29 @@ struct Cli {
     libpath: Option<String>,
 }
 
+#[derive(Args, Debug)]
+#[group(multiple = false)]
+struct SwapType {
+    ///Trace glXSwapBuffers()
+    #[clap(short = 'g', long)]
+    glx: bool,
+
+    ///Trace SDL_GL_SwapWindow()
+    #[clap(short = 's', long)]
+    sdl: bool,
+}
+
 struct DurationCount {
     duration_ms: u32,
     count: u32,
 }
 
 fn log2_index(v: u32) -> usize {
-    let fv = v as f32;
-    fv.log2().floor() as usize
+    f32::log2(v as f32).floor() as usize
 }
 
 fn log2_value(i: usize) -> u32 {
-    2_u32.pow(i as u32)
+    u32::pow(2_u32, i as u32)
 }
 
 fn process_events(
@@ -236,11 +246,14 @@ fn main() -> Result<(), EGLSwapBuffersError> {
     let file;
     let probe;
 
-    if cli.glx {
+    if cli.swap_type.glx {
         probe = "glXSwapBuffers";
         file = format!("{}/libGL.so.1", dir);
+    } else if cli.swap_type.sdl {
+        probe = "SDL_GL_SwapWindow";
+        file = format!("{}/libSDL2-2.0.so.0", dir);
     } else {
-        probe = "eglSwapBuffers";
+        probe = "eglswapbuffers";
         file = format!("{}/libEGL.so.1", dir);
     }
 

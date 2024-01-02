@@ -37,7 +37,7 @@ struct Cli {
     #[clap(short = 'c', long = "command")]
     command: Option<String>,
 
-    #[clap(short, long, parse(from_occurrences))]
+    #[clap(short, long, action=clap::ArgAction::Count)]
     verbose: usize,
 }
 

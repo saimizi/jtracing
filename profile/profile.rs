@@ -17,7 +17,7 @@ use {
         cell::RefCell,
         collections::HashMap,
         fs,
-        io::{self, Write},
+        io::{self, BufWriter, Write},
         mem, process,
         rc::Rc,
         sync::{
@@ -76,7 +76,7 @@ struct Cli {
     output: Option<String>,
 
     ///Verbose
-    #[clap(short, long, parse(from_occurrences))]
+    #[clap(short, long, action=clap::ArgAction::Count)]
     verbose: usize,
 }
 
@@ -273,14 +273,14 @@ pub fn process_data(
             let _ = fs::remove_file(output);
         }
 
-        output_file = Some(
+        output_file = Some(BufWriter::new(
             fs::OpenOptions::new()
                 .create(true)
                 .write(true)
                 .read(true)
                 .open(file_name)
                 .map_err(|_| Report::new(JtraceError::IOError))?,
-        );
+        ));
     }
 
     for event in events.borrow_mut().iter_mut() {
@@ -414,7 +414,6 @@ pub fn process_data(
             if let Some(f) = &mut output_file {
                 f.write(fold_result.as_bytes())
                     .map_err(|_| Report::new(JtraceError::IOError))?;
-                f.flush().map_err(|_| Report::new(JtraceError::IOError))?;
             } else {
                 println!("{}", fold_result);
             }

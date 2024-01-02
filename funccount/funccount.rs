@@ -83,7 +83,7 @@ struct Cli {
     duration: u64,
 
     ///Verbose.
-    #[clap(short, long, parse(from_occurrences))]
+    #[clap(short, long, action=clap::ArgAction::Count)]
     verbose: usize,
 
     ///Show symbol address.
