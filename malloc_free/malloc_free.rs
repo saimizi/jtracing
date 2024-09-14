@@ -41,7 +41,17 @@ fn print_to_log(level: PrintLevel, msg: String) {
     }
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Default)]
+#[command(
+    about,
+    version,
+    after_help = "
+Examples:
+    malloc_free -d 10 -l /lib/x86_64-linux-gnu/
+    malloc_free -d 10 -m
+    malloc_free -l /lib/x86_64-linux-gnu/ -p 3226
+"
+)]
 struct Cli {
     ///Trace for <DURATION> seconds (0 disabled).
     #[clap(short, default_value_t = 0_u64)]
