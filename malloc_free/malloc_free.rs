@@ -50,6 +50,18 @@ Examples:
     malloc_free -d 10 -l /lib/x86_64-linux-gnu/
     malloc_free -d 10 -m
     malloc_free -l /lib/x86_64-linux-gnu/ -p 3226
+
+Output Examples:
+    No   PID      Alloc    Free     Real     Real.max   Req.max  Comm
+    1    3226     460240   452224   8016     13088      3680     Xorg
+--------
+No:         Record index.
+PID:        PID of process.
+Alloc:      Total bytes allocated.
+Free:       Total bytes freed.
+Real:       Bytes not freed.
+Real.max:   Maximum bytes process used at the moment.
+Req.max:    Maximum bytes process required at the moment.
 "
 )]
 struct Cli {
