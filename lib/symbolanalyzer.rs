@@ -466,15 +466,15 @@ impl ElfFile {
         let mut fpathbuf = Path::new(file_name)
             .canonicalize()
             .map_err(|_| Report::new(SymbolAnalyzerError::InvalidElfFile))
-            .attach_printable(format!("Invalid ELF file: {}", file_name))?;
+            .attach_printable(format!("Invalid file path: {}", file_name))?;
 
         if fpathbuf.is_symlink() {
             fpathbuf = fs::read_link(fpathbuf)
                 .map_err(|_| Report::new(SymbolAnalyzerError::InvalidElfFile))
-                .attach_printable(format!("Invalid ELF file: {}", file_name))?
+                .attach_printable(format!("Invalid symbolic file: {}", file_name))?
                 .canonicalize()
                 .map_err(|_| Report::new(SymbolAnalyzerError::InvalidElfFile))
-                .attach_printable(format!("Invalid ELF file: {}", file_name))?;
+                .attach_printable(format!("Invalid symbolic file path: {}", file_name))?;
         }
 
         let fpath = fpathbuf.as_path();
