@@ -77,7 +77,7 @@ struct Cli {
 
     ///Verbose
     #[clap(short, long, action=clap::ArgAction::Count)]
-    verbose: usize,
+    verbose: u8,
 }
 
 type Event = profile_bss_types::event;

@@ -59,7 +59,7 @@ struct Cli {
 
     ///Verbose.
     #[clap(short, long, action=clap::ArgAction::Count)]
-    verbose: usize,
+    verbose: u8,
 
     ///Show call path for max-size malloc() call.
     #[clap(short, long)]

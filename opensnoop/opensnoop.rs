@@ -38,7 +38,7 @@ struct Cli {
     command: Option<String>,
 
     #[clap(short, long, action=clap::ArgAction::Count)]
-    verbose: usize,
+    verbose: u8,
 }
 
 async fn wait_to_finish(start: Instant, duration_s: Option<u64>) -> Result<(), JtraceError> {

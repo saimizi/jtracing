@@ -38,7 +38,7 @@ struct Cli {
 
     ///Verbose
     #[clap(short, long, action=clap::ArgAction::Count)]
-    verbose: usize,
+    verbose: u8,
 
     ///Use timestamp instead of date time.
     #[clap(short = 'r', long)]

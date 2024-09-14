@@ -40,7 +40,7 @@ struct Cli {
 
     ///Verbose
     #[clap(short, long, action=clap::ArgAction::Count)]
-    verbose: usize,
+    verbose: u8,
 }
 
 type ReadLine = bash_readline_bss_types::read_line;
