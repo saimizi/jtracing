@@ -32,7 +32,7 @@ fn print_to_log(level: PrintLevel, msg: String) {
 
 #[derive(Parser, Debug)]
 #[command(
-    about,
+    about = "A utility to trace process's fork, exec and exit events.",
     version,
     after_help = "
 Examples:

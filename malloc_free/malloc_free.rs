@@ -43,7 +43,7 @@ fn print_to_log(level: PrintLevel, msg: String) {
 
 #[derive(Parser, Debug, Default)]
 #[command(
-    about,
+    about = "A utility to trace malloc/free calls.",
     version,
     after_help = "
 Examples:
