@@ -31,6 +31,94 @@ fn print_to_log(level: PrintLevel, msg: String) {
 }
 
 #[derive(Parser, Debug)]
+#[command(
+    about,
+    version,
+    after_help = "
+Examples:
+    # Trace fork event.
+    execsnoop_rb -f
+
+    # Trace exec event
+    execsnoop_rb
+    execsnoop_rb -E
+
+    # Trace exit event
+    execsnoop_rb
+    execsnoop_rb -e
+
+    # Trace All event
+    execsnoop_rb -Efe --ppid
+    execsnoop_rb -Erfet --ppid
+
+Output Examples:
+    1. FORK event
+        Trace fork() system call.
+
+        TIME                 EVENT   COMM             PID      INFO
+        2024-09-15 09:54:34  FORK    execsnoop_rb     626377   626377->626378
+
+        Note:
+          The \"X->Y\" in INFO field shows the parent thread id and the forked child process id.
+          Since PID is the id of the thread group leader which may be different to the thread
+          which actually executes fork(), PID is not alway equal to \"X\".
+
+          If X is not equal to PID, the new process is forked from a thread. You can enable
+          displaying thread id with \"-t\" option and confirm that \"X\" always matches the TID.
+
+    2. EXEC event
+        Trace execev() system call.
+
+        TIME                 EVENT   COMM             PID      INFO
+        2024-09-15 10:27:43  EXEC    nvim             632565   [nvim] /usr/bin/xsel --nodetach -i -b
+
+        Note:
+          INFO field shows what kind of a command is executed by the parent process whose name is
+          displayed inside the square brackets.
+
+    3. EXIT event
+        Trace exit() system call.
+
+        TIME                 EVENT   COMM             PID      INFO
+        2024-09-15 10:47:36  EXIT    rustc            636490   [0]
+        2024-09-15 10:47:38  EXIT    ld               636573   [0] [collect2] (458ms)
+        2024-09-15 10:47:38  EXIT    collect2         636572   [0] [cc] (460ms)
+        2024-09-15 10:47:38  EXIT    cc               636571   [0] [rustc] (466ms)
+        2024-09-15 10:55:26  EXIT    top              637839   [0] [INT=2 <- kworker/u16:3(633411)] [fish] (2539ms)
+
+        Note
+          The format of INFO filed is as follow:
+
+            [RETURN CODE] [SIGNAL INFO] [PARENT COMM] (LIVE DURATION)
+
+          - RETURN CODE
+            Always displayed, normally 0 means a graceful exit.
+
+          - SIGNAL INFO
+            Only displayed when the process exited because of a signal. the signal information is
+            displayed in following format:
+
+                SIGNAL_NAME=SIGNAL_NUMBER <- SENDER_NAME (SENDER_PID)
+
+          - PARENT COMM
+            The name of process who forked the current exited process. This information is only displayed
+            when the FORK event was captured.
+
+          - LIVE DURATION
+            The time of the current process has been alive. This information is only displayed when
+            the FORK event was captured.
+
+    By combing the usage of FORK, EXEC and EXIT events, you can trace the whole lifetime of a command.
+
+        TIME                 EVENT   COMM             PID      PPID     INFO
+        2024-09-15 11:14:37  FORK    starship         643370   632315   643373->643379
+        2024-09-15 11:14:37  EXEC    starship         643379   643370   [starship] /usr/bin/python --version
+        2024-09-15 11:14:37  EXIT    python           643379   643370   [0] [starship] (5ms)
+
+    In this example, \"starship\" forked a process to execute \"/usr/bin/python --version\" which took 5ms.
+
+"
+)]
 struct Cli {
     ///Trace EXIT event for processes lives at least <DURATION> ms.
     #[clap(short, default_value_t = 0_u64)]
