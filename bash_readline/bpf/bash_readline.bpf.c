@@ -25,8 +25,6 @@ struct {
 	__uint(max_entries, sizeof(struct read_line) * 1024);
 } rb SEC(".maps");
 
-char *test_string = "test function";
-
 SEC("uretprobe/")
 int BPF_KRETPROBE(uretprobe_readline, char *para)
 {
