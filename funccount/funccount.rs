@@ -119,8 +119,7 @@ struct Cli {
     #[clap(short = 'S', long = "symbol-file")]
     symbol_file: Option<String>,
 
-    ///File that store symbols to be traced.
-    ///one symbol per line
+    /// List tracepoints
     #[clap(short = 'l', long)]
     list_tracepoints: bool,
 
@@ -153,13 +152,18 @@ struct StackTraceResult {
 
 fn probe_name(event: &StackTraceResult) -> String {
     event.kstack.first().map_or_else(
-        || event.ustack.first().map_or("Unknown".to_string(), |s| s.1.clone()),
+        || {
+            event
+                .ustack
+                .first()
+                .map_or("Unknown".to_string(), |s| s.1.clone())
+        },
         |s| s.1.clone(),
     )
 }
 
 fn process_stack_events(
-    cli: &Cli,
+    _cli: &Cli,
     maps: &mut FunccountMaps,
     result: &mut TraceResult,
     symanalyzer: &mut SymbolAnalyzer,
@@ -187,7 +191,9 @@ fn process_stack_events(
                             break;
                         }
                         let sym = sym_hash.entry(addr).or_insert_with(|| {
-                            symanalyzer.ksymbol(addr).unwrap_or_else(|_| "[unknown]".to_string())
+                            symanalyzer
+                                .ksymbol(addr)
+                                .unwrap_or_else(|_| "[unknown]".to_string())
                         });
                         kstack.push((addr, sym.clone()));
                     }
@@ -202,17 +208,27 @@ fn process_stack_events(
                         if addr == 0 {
                             break;
                         }
-                        if let Some((sym_addr, sym_name, filename)) = pid_sym_hash.get(&(stack.pid, addr)) {
+                        if let Some((sym_addr, sym_name, filename)) =
+                            pid_sym_hash.get(&(stack.pid, addr))
+                        {
                             ustack.push((*sym_addr, sym_name.clone(), filename.clone()));
                             continue;
                         }
 
-                        let (sym_addr, sym_name, filename) = if let Some(em) = exec_map_hash.get_mut(&stack.pid) {
-                            em.symbol(addr).unwrap_or((addr, "[unknown]".to_string(), "[unknown]".to_string()))
-                        } else {
-                            (addr, "[unknown]".to_string(), "[unknown]".to_string())
-                        };
-                        pid_sym_hash.insert((stack.pid, addr), (sym_addr, sym_name.clone(), filename.clone()));
+                        let (sym_addr, sym_name, filename) =
+                            if let Some(em) = exec_map_hash.get_mut(&stack.pid) {
+                                em.symbol(addr).unwrap_or((
+                                    addr,
+                                    "[unknown]".to_string(),
+                                    "[unknown]".to_string(),
+                                ))
+                            } else {
+                                (addr, "[unknown]".to_string(), "[unknown]".to_string())
+                            };
+                        pid_sym_hash.insert(
+                            (stack.pid, addr),
+                            (sym_addr, sym_name.clone(), filename.clone()),
+                        );
                         ustack.push((sym_addr, sym_name, filename));
                     }
                 }
@@ -225,7 +241,11 @@ fn process_stack_events(
                 ustack,
             };
 
-            result.stack.entry(probe_name(&stack_trace_result)).or_default().push(stack_trace_result);
+            result
+                .stack
+                .entry(probe_name(&stack_trace_result))
+                .or_default()
+                .push(stack_trace_result);
         }
     }
     Ok(())
@@ -247,9 +267,13 @@ fn process_exec_events(
         let probe_addr = NativeEndian::read_u64(&entry.frame0);
 
         let probe = if entry.frame0_type == 0 {
-            symanalyzer.ksymbol(probe_addr).unwrap_or_else(|_| "[unknown]".to_string())
+            symanalyzer
+                .ksymbol(probe_addr)
+                .unwrap_or_else(|_| "[unknown]".to_string())
         } else {
-            symanalyzer.usymbol(entry.pid, probe_addr).map_or("[unknown]".to_string(), |(_, s, _)| s)
+            symanalyzer
+                .usymbol(entry.pid, probe_addr)
+                .map_or("[unknown]".to_string(), |(_, s, _)| s)
         };
 
         result.exec.push(ExecTraceResult {
@@ -359,10 +383,9 @@ fn print_stack_trace(
         if !cli.stack {
             let mut pid_cnt: HashMap<u32, (String, u64)> = HashMap::new();
             for event in result_stack {
-                let (_comm, cnt) = pid_cnt.entry(event.stack.pid).or_insert((
-                    unsafe { bytes_to_string(event.stack.comm.as_ptr()) },
-                    0,
-                ));
+                let (_comm, cnt) = pid_cnt
+                    .entry(event.stack.pid)
+                    .or_insert((unsafe { bytes_to_string(event.stack.comm.as_ptr()) }, 0));
                 *cnt += event.cnt;
             }
 

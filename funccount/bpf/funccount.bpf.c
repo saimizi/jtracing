@@ -36,7 +36,7 @@ struct {
 } exectrace_pb SEC(".maps");
 
 struct stacktrace_event _stacktrace_event = {};
-struct exectrace_event _exectrace_event= {};
+struct exectrace_event _exectrace_event = {};
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
@@ -63,6 +63,10 @@ struct {
 
 int self_pid = 0;
 int target_pid = 0;
+/*
+ * 0: stack trace
+ * 1: exec trace
+ */
 int trace_type = 0;
 
 static __always_inline int trace_func(void *ctx)
@@ -78,9 +82,11 @@ static __always_inline int trace_func(void *ctx)
 
 		key.pid = pid;
 		bpf_get_current_comm(&key.comm, sizeof(key.comm));
-		key.kstack = bpf_get_stackid(ctx, &stack_map, 0 | BPF_F_FAST_STACK_CMP);
-		key.ustack =
-			bpf_get_stackid(ctx, &stack_map, 0 | BPF_F_FAST_STACK_CMP | BPF_F_USER_STACK);
+		key.kstack = bpf_get_stackid(ctx, &stack_map,
+					     0 | BPF_F_FAST_STACK_CMP);
+		key.ustack = bpf_get_stackid(ctx, &stack_map,
+					     0 | BPF_F_FAST_STACK_CMP |
+						     BPF_F_USER_STACK);
 		if ((int)key.kstack < 0 && (int)key.ustack < 0)
 			return 0;
 
@@ -88,7 +94,8 @@ static __always_inline int trace_func(void *ctx)
 		if (val)
 			(*val)++;
 		else
-			bpf_map_update_elem(&stack_cnt, &key, &one, BPF_NOEXIST);
+			bpf_map_update_elem(&stack_cnt, &key, &one,
+					    BPF_NOEXIST);
 	} else { /* exec trace */
 		struct exectrace_event ekey = {};
 		int one = 1;
@@ -96,8 +103,10 @@ static __always_inline int trace_func(void *ctx)
 
 		ekey.pid = pid;
 		bpf_get_current_comm(&ekey.comm, sizeof(ekey.comm));
-		if (bpf_get_stack(ctx, &ekey.frame0, sizeof(ekey.frame0), 0) <= 0) {
-			if (bpf_get_stack(ctx, &ekey.frame0, sizeof(ekey.frame0),
+		if (bpf_get_stack(ctx, &ekey.frame0, sizeof(ekey.frame0), 0) <=
+		    0) {
+			if (bpf_get_stack(ctx, &ekey.frame0,
+					  sizeof(ekey.frame0),
 					  BPF_F_USER_STACK) <= 0)
 				return 0;
 			ekey.frame0_type = 1;
@@ -110,7 +119,8 @@ static __always_inline int trace_func(void *ctx)
 		bpf_map_update_elem(&exec_time, &ekey, &one, BPF_NOEXIST);
 	}
 
-	bpf_perf_event_output(ctx, &exectrace_pb, BPF_F_CURRENT_CPU, &pid, sizeof(pid));
+	bpf_perf_event_output(ctx, &exectrace_pb, BPF_F_CURRENT_CPU, &pid,
+			      sizeof(pid));
 
 	return 0;
 }
