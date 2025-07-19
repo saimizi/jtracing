@@ -95,7 +95,10 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
     );
     let mut idx = 0;
     for key in malloc_records.keys() {
-        if let Some(data) = malloc_records.lookup(&key, MapFlags::ANY).change_context(JtraceError::BPFError)? {
+        if let Some(data) = malloc_records
+            .lookup(&key, MapFlags::ANY)
+            .change_context(JtraceError::BPFError)?
+        {
             let mut mr = MallocRecord::default();
             plain::copy_from_bytes(&mut mr, &data).expect("Corrupted event data");
 
@@ -122,10 +125,13 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
                 match ExecMap::new(mr.pid) {
                     Ok(mut em) => {
                         for addr in ustack {
-                            let (offset, symbol, file) = em.symbol(*addr).map_err(|e| {
-                                jwarn!("Failed to get symbol for address {:#x}: {}", addr, e);
-                                Report::new(JtraceError::SymbolAnalyzerError)
-                            }).unwrap_or((0, "[unknown]".to_string(), "unknown".to_string()));
+                            let (offset, symbol, file) = em
+                                .symbol(*addr)
+                                .map_err(|e| {
+                                    jwarn!("Failed to get symbol for address {:#x}: {}", addr, e);
+                                    Report::new(JtraceError::SymbolAnalyzerError)
+                                })
+                                .unwrap_or((0, "[unknown]".to_string(), "unknown".to_string()));
                             println!("    {:x}(+{})  {} {}", addr, offset, symbol, file);
                         }
                     }
