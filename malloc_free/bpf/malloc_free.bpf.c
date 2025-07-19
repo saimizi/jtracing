@@ -13,10 +13,12 @@
 #define PERF_MAX_STACK_DEPTH 128
 #endif
 
+// Structure to store malloc event data
 struct malloc_event{
 	u32 size;
 };
 
+// Structure to store malloc record data
 struct malloc_record {
 	u32 pid;
 	u32 tid;
@@ -33,6 +35,7 @@ struct malloc_record _malloc_record = {};
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
+// Hash map to store malloc event records
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 8192);
@@ -40,6 +43,7 @@ struct {
 	__type(value, struct malloc_event);
 } malloc_event_records SEC(".maps");
 
+// Per-CPU array to store malloc records
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 1);
@@ -47,6 +51,7 @@ struct {
 	__type(value, struct malloc_record);
 } alloc_heap SEC(".maps");
 
+// Hash map to store malloc events
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 1024);
@@ -54,6 +59,7 @@ struct {
 	__type(value, struct malloc_event);
 } event_heap SEC(".maps");
 
+// Hash map to store malloc records
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 1024);
@@ -65,6 +71,7 @@ struct {
 int target_pid = 0;
 
 
+// Uprobe to trace malloc calls
 SEC("uprobe/")
 int BPF_KPROBE(uprobe_malloc, int size)
 {
@@ -84,6 +91,7 @@ int BPF_KPROBE(uprobe_malloc, int size)
 
 #define REAL_SIZE(entry) (entry->alloc_size - entry->free_size)
 
+// Uretprobe to trace malloc return values
 SEC("uprobe/")
 int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 {
@@ -99,6 +107,7 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 		return 0;
 
 	if (ptr) {
+		// Create a new malloc record if one doesn't exist
 		u32 zero = 0;
 		struct malloc_record *entry = bpf_map_lookup_elem(&malloc_records, &pid);
 		if (!entry) {
@@ -119,6 +128,7 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 				bpf_map_update_elem(&malloc_records, &pid, new, BPF_ANY);
 			}
 		} else {
+			// Update existing malloc record
 			entry->alloc_size += e->size;
 			if (REAL_SIZE(entry)> entry->max_size) {
 				entry->max_size = REAL_SIZE(entry);
@@ -135,12 +145,15 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 			bpf_map_update_elem(&malloc_records, &pid, entry, BPF_ANY);
 		}
 
+		// Store the malloc event record
 		bpf_map_update_elem(&malloc_event_records, &ptr, e, BPF_NOEXIST);
 	}
 
+	// Delete the malloc event
 	bpf_map_delete_elem(&event_heap, &tid);
 }
 
+// Uprobe to trace free calls
 SEC("uprobe/")
 int BPF_KPROBE(uprobe_free, void *ptr)
 {
@@ -151,14 +164,17 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 	if (target_pid >= 0 && target_pid != pid)
 		return 0;
 
+	// Look up the malloc event record
 	struct malloc_event *e= bpf_map_lookup_elem(&malloc_event_records, &ptr);
 	if (e) {
+		// Update the malloc record
 		struct malloc_record *entry = bpf_map_lookup_elem(&malloc_records, &pid);
 		if (entry) {
 			entry->free_size  += e->size;
 			bpf_map_update_elem(&malloc_records, &pid, entry, BPF_ANY);
 		}
 
+		// Delete the malloc event record
 		bpf_map_delete_elem(&malloc_event_records, &ptr);
 	}
 
