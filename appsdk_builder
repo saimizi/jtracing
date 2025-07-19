@@ -1,0 +1,8 @@
+#!/usr/bin/bash
+
+if [ "$1" = "clean" ];then
+	docker run --rm -it -v $PWD:/work/  joukan/rpi4-appsdk:latest cargo_clean
+	exit
+fi
+
+docker run --rm -it -v $PWD:/work/  joukan/rpi4-appsdk:latest cargo_build $*
