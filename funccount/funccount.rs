@@ -119,8 +119,7 @@ struct Cli {
     #[clap(short = 'S', long = "symbol-file")]
     symbol_file: Option<String>,
 
-    ///File that store symbols to be traced.
-    ///one symbol per line
+    /// List tracepoints
     #[clap(short = 'l', long)]
     list_tracepoints: bool,
 
@@ -151,14 +150,146 @@ struct StackTraceResult {
     ustack: Vec<(u64, String, String)>,
 }
 
-fn probe_name(event: &StackTraceResult) -> &str {
-    if !event.kstack.is_empty() {
-        event.kstack.first().unwrap().1.as_str()
-    } else if !event.ustack.is_empty() {
-        event.ustack.first().unwrap().1.as_str()
-    } else {
-        "Unknown"
+fn probe_name(event: &StackTraceResult) -> String {
+    event.kstack.first().map_or_else(
+        || {
+            event
+                .ustack
+                .first()
+                .map_or("Unknown".to_string(), |s| s.1.clone())
+        },
+        |s| s.1.clone(),
+    )
+}
+
+fn process_stack_events(
+    _cli: &Cli,
+    maps: &mut FunccountMaps,
+    result: &mut TraceResult,
+    symanalyzer: &mut SymbolAnalyzer,
+    exec_map_hash: &mut HashMap<u32, ExecMap>,
+) -> Result<(), FuncCountError> {
+    let stack_cnt = maps.stack_cnt();
+    let stack_map = maps.stack_map();
+    let mut sym_hash = HashMap::new();
+    let mut pid_sym_hash: HashMap<(u32, u64), (u64, String, String)> = HashMap::new();
+
+    for key in stack_cnt.keys() {
+        if let Ok(Some(data)) = stack_cnt.lookup(&key, MapFlags::ANY) {
+            let mut stack = StackEvent::default();
+            plain::copy_from_bytes(&mut stack, &key).expect("Corrupted event data");
+
+            let mut cnt = 0_u64;
+            plain::copy_from_bytes(&mut cnt, &data).expect("Corrupted event data");
+
+            let mut kstack = vec![];
+            if stack.kstack > 0 {
+                if let Ok(Some(ks)) = stack_map.lookup(&stack.kstack.to_ne_bytes(), MapFlags::ANY) {
+                    for addr_bytes in ks.chunks(8) {
+                        let addr = NativeEndian::read_u64(addr_bytes);
+                        if addr == 0 {
+                            break;
+                        }
+                        let sym = sym_hash.entry(addr).or_insert_with(|| {
+                            symanalyzer
+                                .ksymbol(addr)
+                                .unwrap_or_else(|_| "[unknown]".to_string())
+                        });
+                        kstack.push((addr, sym.clone()));
+                    }
+                }
+            }
+
+            let mut ustack = vec![];
+            if stack.ustack > 0 {
+                if let Ok(Some(us)) = stack_map.lookup(&stack.ustack.to_ne_bytes(), MapFlags::ANY) {
+                    for addr_bytes in us.chunks(8) {
+                        let addr = NativeEndian::read_u64(addr_bytes);
+                        if addr == 0 {
+                            break;
+                        }
+                        if let Some((sym_addr, sym_name, filename)) =
+                            pid_sym_hash.get(&(stack.pid, addr))
+                        {
+                            ustack.push((*sym_addr, sym_name.clone(), filename.clone()));
+                            continue;
+                        }
+
+                        let (sym_addr, sym_name, filename) =
+                            if let Some(em) = exec_map_hash.get_mut(&stack.pid) {
+                                em.symbol(addr).unwrap_or((
+                                    addr,
+                                    "[unknown]".to_string(),
+                                    "[unknown]".to_string(),
+                                ))
+                            } else {
+                                (addr, "[unknown]".to_string(), "[unknown]".to_string())
+                            };
+                        pid_sym_hash.insert(
+                            (stack.pid, addr),
+                            (sym_addr, sym_name.clone(), filename.clone()),
+                        );
+                        ustack.push((sym_addr, sym_name, filename));
+                    }
+                }
+            }
+
+            let stack_trace_result = StackTraceResult {
+                cnt,
+                stack,
+                kstack,
+                ustack,
+            };
+
+            result
+                .stack
+                .entry(probe_name(&stack_trace_result))
+                .or_default()
+                .push(stack_trace_result);
+        }
     }
+    Ok(())
+}
+
+fn process_exec_events(
+    cli: &Cli,
+    maps: &mut FunccountMaps,
+    result: &mut TraceResult,
+    symanalyzer: &mut SymbolAnalyzer,
+) -> Result<(), FuncCountError> {
+    let exec_time = maps.exec_time();
+    let show_limit = cli.count.unwrap_or(u32::MAX);
+
+    for key in exec_time.keys() {
+        let mut entry = ExecTraceEvent::default();
+        plain::copy_from_bytes(&mut entry, &key).expect("Corrupted event data");
+        let ts: u64 = NativeEndian::read_u64(&entry.ts);
+        let probe_addr = NativeEndian::read_u64(&entry.frame0);
+
+        let probe = if entry.frame0_type == 0 {
+            symanalyzer
+                .ksymbol(probe_addr)
+                .unwrap_or_else(|_| "[unknown]".to_string())
+        } else {
+            symanalyzer
+                .usymbol(entry.pid, probe_addr)
+                .map_or("[unknown]".to_string(), |(_, s, _)| s)
+        };
+
+        result.exec.push(ExecTraceResult {
+            pid: entry.pid,
+            ts,
+            comm: unsafe { bytes_to_string(entry.comm.as_ptr()) },
+            probe,
+        });
+
+        if result.exec.len() >= show_limit as usize {
+            break;
+        }
+    }
+
+    result.exec.sort_by(|a, b| a.ts.cmp(&b.ts));
+    Ok(())
 }
 
 fn process_events(
@@ -169,138 +300,164 @@ fn process_events(
     exec_map_hash: &mut HashMap<u32, ExecMap>,
 ) -> Result<(), FuncCountError> {
     if cli.exec {
-        let exec_time = maps.exec_time();
-        let show_limit = cli.count.unwrap_or(u32::MAX);
-
-        for key in exec_time.keys() {
-            let mut entry = ExecTraceEvent::default();
-            plain::copy_from_bytes(&mut entry, &key).expect("Corrupted event data");
-            let ts: u64 = NativeEndian::read_u64(&entry.ts);
-            let probe_addr = NativeEndian::read_u64(&entry.frame0);
-
-            let mut probe = String::from("Unknown");
-            if entry.frame0_type == 0 {
-                if let Ok(p_name) = symanalyzer.ksymbol(probe_addr) {
-                    probe = p_name;
-                }
-            } else if let Ok((_, p_name, _file)) = symanalyzer.usymbol(entry.pid, probe_addr) {
-                probe = p_name;
-            }
-
-            result.exec.push(ExecTraceResult {
-                pid: entry.pid,
-                ts,
-                comm: unsafe { bytes_to_string(entry.comm.as_ptr()) },
-                probe,
-            });
-
-            if result.exec.len() >= show_limit as usize {
-                break;
-            }
-        }
-
-        result.exec.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap());
+        process_exec_events(cli, maps, result, symanalyzer)?;
     } else {
-        let stack_cnt = maps.stack_cnt();
-        let stack_map = maps.stack_map();
-        let mut sym_hash = HashMap::new();
-        let mut pid_sym_hash: HashMap<(u32, u64), (u64, String, String)> = HashMap::new();
+        process_stack_events(cli, maps, result, symanalyzer, exec_map_hash)?;
+    }
+    Ok(())
+}
 
-        for key in stack_cnt.keys() {
-            if let Ok(Some(data)) = stack_cnt.lookup(&key, MapFlags::ANY) {
-                let mut stack = StackEvent::default();
-                plain::copy_from_bytes(&mut stack, &key).expect("Corrupted event data");
+fn print_exec_trace(
+    cli: &Cli,
+    exec_results: &[ExecTraceResult],
+    writer: &mut dyn Write,
+) -> Result<(), FuncCountError> {
+    let show_limit = cli.count.unwrap_or(u32::MAX);
+    let mut show_count = 0;
 
-                let mut cnt = 0_u64;
-                plain::copy_from_bytes(&mut cnt, &data).expect("Corrupted event data");
+    writeln!(writer, "{:<12} {:<5} {:20} ", "Timestamp", "PID", "Command")
+        .map_err(|_| Report::new(FuncCountError::Unexpected))?;
 
-                let mut kstack = vec![];
-                let mut ustack = vec![];
+    let mut ts_previous = 0_u64;
+    for event in exec_results {
+        let ts = event.ts / 1000;
+        let ts_show = if cli.relative {
+            if ts_previous == 0 {
+                0
+            } else {
+                ts - ts_previous
+            }
+        } else {
+            ts
+        };
+        ts_previous = ts;
 
-                if stack.kstack > 0 {
-                    if let Ok(Some(ks)) =
-                        stack_map.lookup(&stack.kstack.to_ne_bytes(), MapFlags::ANY)
-                    {
-                        let num = ks.len() / 8;
-                        let mut i = 0_usize;
+        writeln!(
+            writer,
+            "{:<12.6} {:<5} {:20} {}",
+            ts_show as f64 / 1000000_f64,
+            event.pid,
+            event.comm,
+            event.probe
+        )
+        .map_err(|_| Report::new(FuncCountError::Unexpected))?;
 
-                        while i < num {
-                            let addr = NativeEndian::read_u64(&ks[8 * i..8 * (i + 1)]);
-                            if addr == 0 {
-                                break;
-                            }
+        show_count += 1;
+        if show_count >= show_limit {
+            break;
+        }
+    }
+    Ok(())
+}
 
-                            let sym = sym_hash.entry(addr).or_insert(
-                                symanalyzer
-                                    .ksymbol(addr)
-                                    .change_context(FuncCountError::SymbolAnalyzerError)?,
-                            );
-                            kstack.push((addr, sym.to_string()));
+fn print_stack_trace(
+    cli: &Cli,
+    stack_results: &mut HashMap<String, Vec<StackTraceResult>>,
+    runtime_s: u64,
+    writer: &mut dyn Write,
+) -> Result<(), FuncCountError> {
+    let show_limit = cli.count.unwrap_or(u32::MAX);
+    let mut show_count = 0;
 
-                            i += 1;
-                        }
-                    }
-                }
+    for (probe_name, result_stack) in stack_results.iter_mut() {
+        result_stack.sort_by(|a, b| b.cnt.cmp(&a.cnt));
 
-                if stack.ustack > 0 {
-                    if let Ok(Some(us)) =
-                        stack_map.lookup(&stack.ustack.to_ne_bytes(), MapFlags::ANY)
-                    {
-                        let num = us.len() / 8;
-                        let mut i = 0_usize;
+        let total_cnt: u64 = result_stack.iter().map(|a| a.cnt).sum();
 
-                        while i < num {
-                            let addr = NativeEndian::read_u64(&us[8 * i..8 * (i + 1)]);
-                            if addr == 0 {
-                                break;
-                            }
-                            i += 1;
+        writeln!(
+            writer,
+            "PROBE: {} COUNTS: {}, {} COUNTS/s",
+            probe_name,
+            total_cnt,
+            total_cnt / runtime_s
+        )
+        .map_err(|_| Report::new(FuncCountError::Unexpected))?;
 
-                            if let Some((sym_addr, sym_name, filename)) =
-                                pid_sym_hash.get(&(stack.pid, addr))
-                            {
-                                ustack.push((
-                                    *sym_addr,
-                                    sym_name.to_string(),
-                                    filename.to_string(),
-                                ));
-                                continue;
-                            }
+        writeln!(
+            writer,
+            "  {:<5} {:20} {:<8} {:9} {:9}",
+            "PID", "COMMAND", "COUNTS", "PERCENT", "COUNTS/s"
+        )
+        .map_err(|_| Report::new(FuncCountError::Unexpected))?;
 
-                            if let Some(em) = exec_map_hash.get_mut(&stack.pid) {
-                                if let Ok((sym_addr, sym_name, filename)) = em.symbol(addr) {
-                                    pid_sym_hash.insert(
-                                        (stack.pid, addr),
-                                        (sym_addr, sym_name.clone(), filename.clone()),
-                                    );
-                                    ustack.push((sym_addr, sym_name, filename));
-                                    continue;
-                                }
-                            }
+        if !cli.stack {
+            let mut pid_cnt: HashMap<u32, (String, u64)> = HashMap::new();
+            for event in result_stack {
+                let (_comm, cnt) = pid_cnt
+                    .entry(event.stack.pid)
+                    .or_insert((unsafe { bytes_to_string(event.stack.comm.as_ptr()) }, 0));
+                *cnt += event.cnt;
+            }
 
-                            pid_sym_hash.insert(
-                                (stack.pid, addr),
-                                (addr, "[unknown]".to_string(), "[unknown]".to_string()),
-                            );
-                            ustack.push((addr, "[unknown]".to_string(), "[unknown]".to_string()));
-                        }
-                    }
-                }
-
-                let stack_trace_result = StackTraceResult {
+            for (pid, (comm, cnt)) in pid_cnt.iter() {
+                writeln!(
+                    writer,
+                    "  {:<5} {:20} {:<8} {:5.2}% {:9}",
+                    pid,
+                    comm,
                     cnt,
-                    stack,
-                    kstack,
-                    ustack,
-                };
+                    (*cnt as f64 / total_cnt as f64) * 100_f64,
+                    cnt / runtime_s
+                )
+                .map_err(|_| Report::new(FuncCountError::Unexpected))?;
+            }
+        } else {
+            for event in result_stack {
+                let pid = event.stack.pid;
+                let comm = unsafe { bytes_to_string(event.stack.comm.as_ptr()) };
+                let cnt = event.cnt;
 
-                let str_vec = result
-                    .stack
-                    .entry(probe_name(&stack_trace_result).to_string())
-                    .or_insert(Vec::new());
-                str_vec.push(stack_trace_result);
+                writeln!(
+                    writer,
+                    "{:<5} {:20} {:<8} {:5.2}% {:9}",
+                    pid,
+                    comm,
+                    cnt,
+                    (cnt as f64 / total_cnt as f64) * 100_f64,
+                    cnt / runtime_s
+                )
+                .map_err(|_| Report::new(FuncCountError::Unexpected))?;
+
+                let mut fno = 0;
+                for (addr, sym) in event.kstack.iter() {
+                    if cli.addr {
+                        writeln!(writer, "    {:3} {:20x} {}", fno, addr, sym)
+                            .map_err(|_| Report::new(FuncCountError::Unexpected))?;
+                    } else {
+                        writeln!(writer, "    {:3} {}", fno, sym)
+                            .map_err(|_| Report::new(FuncCountError::Unexpected))?;
+                    }
+                    fno -= 1;
+                }
+
+                for (addr, symbol, filename) in event.ustack.iter() {
+                    let filename_str = if cli.file {
+                        format!("({})", filename)
+                    } else {
+                        String::new()
+                    };
+
+                    if cli.addr {
+                        writeln!(
+                            writer,
+                            "    {:3} {:20x} {} {}",
+                            fno, addr, symbol, filename_str
+                        )
+                        .map_err(|_| Report::new(FuncCountError::Unexpected))?;
+                    } else {
+                        writeln!(writer, "    {:3} {} {}", fno, symbol, filename_str)
+                            .map_err(|_| Report::new(FuncCountError::Unexpected))?;
+                    }
+                    fno -= 1;
+                }
+
+                show_count += 1;
+                if show_count >= show_limit {
+                    break;
+                }
             }
         }
+        writeln!(writer).map_err(|_| Report::new(FuncCountError::Unexpected))?;
     }
     Ok(())
 }
@@ -308,171 +465,24 @@ fn process_events(
 fn print_result(cli: &Cli, result: &mut TraceResult, runtime_s: u64) -> Result<(), FuncCountError> {
     let runtime_s = if runtime_s == 0 { 1 } else { runtime_s };
 
-    let mut log_file = cli.output.clone().and_then(|f| File::create(f).ok());
-    let need_newline = log_file.is_none();
-    let mut write_log = |msg: String| {
-        if let Some(f) = &mut log_file {
-            f.write_all(msg.as_bytes())?;
-            f.write_all("\n".as_bytes())
-        } else {
-            io::stdout().write_all(msg.as_bytes())?;
-            io::stdout().write_all("\n".as_bytes())
-        }
+    let mut writer: Box<dyn Write> = if let Some(f) = &cli.output {
+        Box::new(BufWriter::new(
+            File::create(f).map_err(|_| Report::new(FuncCountError::Unexpected))?,
+        ))
+    } else {
+        Box::new(io::stdout())
     };
 
-    if need_newline {
+    if cli.output.is_none() {
         println!();
     }
 
-    let show_limit = cli.count.unwrap_or(u32::MAX);
-
     if !result.exec.is_empty() {
-        let mut show_count = 0;
-
-        write_log(format!(
-            "{:<12} {:<5} {:20} ",
-            "Timestamp", "PID", "Command"
-        ))
-        .map_err(|_| Report::new(FuncCountError::Unexpected))?;
-
-        let mut ts_previous = 0_u64;
-        for event in &result.exec {
-            let ts = event.ts / 1000;
-            let ts_show;
-
-            if cli.relative {
-                if ts_previous == 0 {
-                    ts_show = 0;
-                } else {
-                    ts_show = ts - ts_previous;
-                }
-                ts_previous = ts;
-            } else {
-                ts_show = ts;
-            }
-
-            write_log(format!(
-                "{:<12.6} {:<5} {:20} {}",
-                ts_show as f64 / 1000000_f64,
-                event.pid,
-                event.comm,
-                event.probe
-            ))
-            .map_err(|_| Report::new(FuncCountError::Unexpected))?;
-
-            show_count += 1;
-            if show_count >= show_limit {
-                break;
-            }
-        }
+        print_exec_trace(cli, &result.exec, &mut writer)?;
     }
 
     if !result.stack.is_empty() {
-        let mut show_count = 0;
-
-        for (_, (probe_name, result_stack)) in result.stack.iter_mut().enumerate() {
-            result_stack.sort_by(|a, b| b.cnt.partial_cmp(&a.cnt).unwrap());
-
-            let mut total_cnt = 0;
-            result_stack.iter().for_each(|a| total_cnt += a.cnt);
-
-            write_log(format!(
-                "PROBE: {} COUNTS: {}, {} COUNTS/s",
-                probe_name,
-                total_cnt,
-                total_cnt / runtime_s
-            ))
-            .map_err(|_| Report::new(FuncCountError::Unexpected))?;
-
-            write_log(format!(
-                "  {:<5} {:20} {:<8} {:9} {:9}",
-                "PID", "COMMAND", "COUNTS", "PERCENT", "COUNTS/s"
-            ))
-            .map_err(|_| Report::new(FuncCountError::Unexpected))?;
-
-            if !cli.stack {
-                let mut pid_cnt = HashMap::new();
-
-                for event in result_stack {
-                    let pid = event.stack.pid;
-                    let comm = unsafe { bytes_to_string(event.stack.comm.as_ptr()) };
-                    let cnt = event.cnt;
-
-                    let (_comm_, cnt_) = pid_cnt.entry(pid).or_insert((comm, 0_u64));
-                    *cnt_ += cnt;
-                }
-
-                for (_, (pid, (comm, cnt))) in pid_cnt.iter().enumerate() {
-                    write_log(format!(
-                        "  {:<5} {:20} {:<8} {:5.2}% {:9}",
-                        pid,
-                        comm,
-                        cnt,
-                        (*cnt as f64 / total_cnt as f64) * 100_f64,
-                        cnt / runtime_s
-                    ))
-                    .map_err(|_| Report::new(FuncCountError::Unexpected))?;
-                }
-            } else {
-                for event in result_stack {
-                    let pid = event.stack.pid;
-                    let comm = unsafe { bytes_to_string(event.stack.comm.as_ptr()) };
-                    let cnt = event.cnt;
-
-                    write_log(format!(
-                        "{:<5} {:20} {:<8} {:5.2}% {:9}",
-                        pid,
-                        comm,
-                        cnt,
-                        (cnt as f64 / total_cnt as f64) * 100_f64,
-                        cnt / runtime_s
-                    ))
-                    .map_err(|_| Report::new(FuncCountError::Unexpected))?;
-
-                    let mut fno = 0;
-                    for (addr, sym) in event.kstack.iter() {
-                        if cli.addr {
-                            write_log(format!("    {:3} {:20x} {}", fno, addr, sym))
-                                .map_err(|_| Report::new(FuncCountError::Unexpected))?;
-                        } else {
-                            write_log(format!("    {:3} {}", fno, sym))
-                                .map_err(|_| Report::new(FuncCountError::Unexpected))?;
-                        }
-
-                        fno -= 1;
-                    }
-
-                    for (addr, symbol, filename) in event.ustack.iter() {
-                        let mut filename_str = String::new();
-                        if cli.file {
-                            filename_str = format!("({})", filename);
-                        }
-
-                        if cli.addr {
-                            write_log(format!(
-                                "    {:3} {:20x} {} {}",
-                                fno, addr, symbol, filename_str
-                            ))
-                            .map_err(|_| Report::new(FuncCountError::Unexpected))?;
-                        } else {
-                            write_log(format!("    {:3} {} {}", fno, symbol, filename_str))
-                                .map_err(|_| Report::new(FuncCountError::Unexpected))?;
-                        }
-
-                        fno -= 1;
-                    }
-
-                    show_count += 1;
-                    if show_count >= show_limit {
-                        break;
-                    }
-                }
-            }
-
-            write_log("".to_string()).map_err(|_| Report::new(FuncCountError::Unexpected))?;
-        }
-
-        return Ok(());
+        print_stack_trace(cli, &mut result.stack, runtime_s, &mut writer)?;
     }
 
     Ok(())
