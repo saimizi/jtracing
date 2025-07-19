@@ -90,12 +90,12 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
     let malloc_records = maps.malloc_records();
 
     println!(
-        "{:4} {:8} {:8} {:8} {:8} {:10} {:8} Comm",
+        "{:<4} {:<8} {:<8} {:<8} {:<8} {:<10} {:<8} Comm",
         "No", "PID", "Alloc", "Free", "Real", "Real.max", "Req.max"
     );
     let mut idx = 0;
     for key in malloc_records.keys() {
-        if let Ok(Some(data)) = malloc_records.lookup(&key, MapFlags::ANY) {
+        if let Some(data) = malloc_records.lookup(&key, MapFlags::ANY).change_context(JtraceError::BPFError)? {
             let mut mr = MallocRecord::default();
             plain::copy_from_bytes(&mut mr, &data).expect("Corrupted event data");
 
@@ -119,17 +119,20 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
                 let ustack_sz = (mr.ustack_sz / 8) as usize;
                 let ustack = &mr.ustack[..ustack_sz];
 
-                if let Ok(mut em) = ExecMap::new(mr.pid) {
-                    for addr in ustack {
-                        let (offset, symbol, file) = em.symbol(*addr).unwrap_or((
-                            0,
-                            "[unknown]".to_string(),
-                            "unknown".to_string(),
-                        ));
-                        println!("    {:x}(+{})  {} {}", addr, offset, symbol, file);
+                match ExecMap::new(mr.pid) {
+                    Ok(mut em) => {
+                        for addr in ustack {
+                            let (offset, symbol, file) = em.symbol(*addr).map_err(|e| {
+                                jwarn!("Failed to get symbol for address {:#x}: {}", addr, e);
+                                Report::new(JtraceError::SymbolAnalyzerError)
+                            }).unwrap_or((0, "[unknown]".to_string(), "unknown".to_string()));
+                            println!("    {:x}(+{})  {} {}", addr, offset, symbol, file);
+                        }
                     }
-                } else {
-                    println!("    No map found.");
+                    Err(e) => {
+                        jwarn!("Failed to get ExecMap for pid {}: {}", mr.pid, e);
+                        println!("    No map found.");
+                    }
                 }
                 println!();
             }
@@ -199,24 +202,24 @@ fn main() -> Result<(), JtraceError> {
         skel.progs_mut()
             .uprobe_malloc()
             .attach_uprobe(false, -1, file.clone(), malloc_offset)
-            .map_err(|_| Report::new(JtraceError::SymbolAnalyzerError))
-            .attach_printable("Failed to attach eglSwapBuffers().".to_string())?,
+            .map_err(|_| Report::new(JtraceError::BPFError))
+            .attach_printable("Failed to attach uprobe_malloc.".to_string())?,
     );
 
     links.push(
         skel.progs_mut()
             .uretprobe_malloc()
             .attach_uprobe(true, -1, file.clone(), malloc_offset)
-            .map_err(|_| Report::new(JtraceError::SymbolAnalyzerError))
-            .attach_printable("Failed to attach eglSwapBuffers().".to_string())?,
+            .map_err(|_| Report::new(JtraceError::BPFError))
+            .attach_printable("Failed to attach uretprobe_malloc.".to_string())?,
     );
 
     links.push(
         skel.progs_mut()
             .uprobe_free()
             .attach_uprobe(false, -1, file.clone(), free_offset)
-            .map_err(|_| Report::new(JtraceError::SymbolAnalyzerError))
-            .attach_printable("Failed to attach eglSwapBuffers().".to_string())?,
+            .map_err(|_| Report::new(JtraceError::BPFError))
+            .attach_printable("Failed to attach uprobe_free.".to_string())?,
     );
 
     let start = Instant::now();
