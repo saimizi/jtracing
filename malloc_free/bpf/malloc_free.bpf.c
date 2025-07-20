@@ -15,6 +15,7 @@
 
 // Structure to store malloc event data
 struct malloc_event {
+	u32 tid;
 	u32 size;
 };
 
@@ -82,6 +83,7 @@ int BPF_KPROBE(uprobe_malloc, int size)
 		return 0;
 
 	event.size = size;
+	event.tid = tid;
 	bpf_map_update_elem(&event_heap, &tid, &event, BPF_NOEXIST);
 
 	return 0;
@@ -108,13 +110,14 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 		// Create a new malloc record if one doesn't exist
 		u32 zero = 0;
 		struct malloc_record *entry =
-			bpf_map_lookup_elem(&malloc_records, &tid);
+			bpf_map_lookup_elem(&malloc_records, &e->tid);
 		if (!entry) {
 			struct malloc_record *new =
 				bpf_map_lookup_elem(&alloc_heap, &zero);
 			if (new) {
 				new->pid = pid;
-				new->tid = tid;
+				// Note e->tid is same to tid.
+				new->tid = e->tid;
 				new->alloc_size = e->size;
 				new->free_size = 0;
 				new->max_size = e->size;
@@ -126,8 +129,8 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 						      sizeof(new->ustack),
 						      BPF_F_USER_STACK);
 
-				bpf_map_update_elem(&malloc_records, &tid, new,
-						    BPF_ANY);
+				bpf_map_update_elem(&malloc_records, &e->tid,
+						    new, BPF_ANY);
 			}
 		} else {
 			// Update existing malloc record
@@ -144,7 +147,7 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 						      BPF_F_USER_STACK);
 			}
 
-			bpf_map_update_elem(&malloc_records, &tid, entry,
+			bpf_map_update_elem(&malloc_records, &e->tid, entry,
 					    BPF_ANY);
 		}
 
@@ -163,7 +166,6 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 {
 	u64 id = bpf_get_current_pid_tgid();
 	u32 pid = id >> 32;
-	u32 tid = (u32)id;
 
 	if (target_pid >= 0 && target_pid != pid)
 		return 0;
@@ -172,12 +174,15 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 	struct malloc_event *e =
 		bpf_map_lookup_elem(&malloc_event_records, &ptr);
 	if (e) {
-		// Update the malloc record
+		/* Update the malloc record
+		 * note the record is stored in the key of tid which malloc
+		 * happened. it might be different from the current thread.
+		 */
 		struct malloc_record *entry =
-			bpf_map_lookup_elem(&malloc_records, &tid);
+			bpf_map_lookup_elem(&malloc_records, &e->tid);
 		if (entry) {
 			entry->free_size += e->size;
-			bpf_map_update_elem(&malloc_records, &tid, entry,
+			bpf_map_update_elem(&malloc_records, &e->tid, entry,
 					    BPF_ANY);
 		}
 
