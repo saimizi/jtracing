@@ -22,7 +22,7 @@ use {
         },
         time::{Duration, Instant},
     },
-    tracelib::{bump_memlock_rlimit, bytes_to_string, ElfFile, ExecMap, JtraceError},
+    tracelib::{bump_memlock_rlimit, bytes_to_string, tid_to_pid, ElfFile, ExecMap, JtraceError},
 };
 
 #[path = "bpf/malloc_free.skel.rs"]
@@ -146,25 +146,6 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
     }
 
     Ok(())
-}
-
-fn tid_to_pid(tid: i32) -> Option<i32> {
-    use std::fs;
-    use std::io::{self, BufRead};
-
-    // 'Tgid' is the process id.
-    let status_path = format!("/proc/{}/status", tid);
-    let file = fs::File::open(&status_path).ok()?;
-    let reader = io::BufReader::new(file);
-
-    for line in reader.lines() {
-        let line = line.ok()?;
-        if line.starts_with("Tgid:") {
-            let pid_str = line.trim_start_matches("Tgid:").trim();
-            return pid_str.parse::<i32>().ok();
-        }
-    }
-    None
 }
 
 fn main() -> Result<(), JtraceError> {
