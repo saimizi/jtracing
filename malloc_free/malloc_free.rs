@@ -12,7 +12,6 @@ use {
         MapFlags, PrintLevel,
     },
     plain::Plain,
-    std::error::Error,
     std::{
         collections::HashMap,
         io::Cursor,
@@ -149,6 +148,25 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
     Ok(())
 }
 
+fn tid_to_pid(tid: i32) -> Option<i32> {
+    use std::fs;
+    use std::io::{self, BufRead};
+
+    // 'Tgid' is the process id.
+    let status_path = format!("/proc/{}/status", tid);
+    let file = fs::File::open(&status_path).ok()?;
+    let reader = io::BufReader::new(file);
+
+    for line in reader.lines() {
+        let line = line.ok()?;
+        if line.starts_with("Tgid:") {
+            let pid_str = line.trim_start_matches("Tgid:").trim();
+            return pid_str.parse::<i32>().ok();
+        }
+    }
+    None
+}
+
 fn main() -> Result<(), JtraceError> {
     let mut cli = Cli::parse();
     let max_level = match cli.verbose {
@@ -172,7 +190,15 @@ fn main() -> Result<(), JtraceError> {
         .map_err(|_| Report::new(JtraceError::BPFError))
         .attach_printable("Failed to open bpf")?;
 
-    if let Some(pid) = cli.pid {
+    if let Some(id) = cli.pid.as_ref() {
+        let pid = tid_to_pid(*id).ok_or(
+            Report::new(JtraceError::InvalidData)
+                .attach_printable(format!("Could not convert TID {} to PID.", id)),
+        )?;
+
+        if *id != pid {
+            jinfo!("Converted TID {} to PID {}", id, pid);
+        }
         open_skel.bss().target_pid = pid;
     } else {
         open_skel.bss().target_pid = -1;
