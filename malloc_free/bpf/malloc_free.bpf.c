@@ -78,7 +78,7 @@ int BPF_KPROBE(uprobe_malloc, int size)
 	u32 pid = id >> 32;
 	u32 tid = (u32)id;
 
-	if (target_pid >= 0 && target_pid != pid)
+	if (target_pid >= 0 && target_pid != tid)
 		return 0;
 
 	event.size = size;
@@ -97,7 +97,8 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 	u32 pid = id >> 32;
 	u32 tid = (u32)id;
 
-	if (target_pid >= 0 && target_pid != pid)
+	// we might trace a thread, so use tid to identify the malloc event
+	if (target_pid >= 0 && target_pid != tid)
 		return 0;
 
 	struct malloc_event *e = bpf_map_lookup_elem(&event_heap, &tid);
@@ -165,7 +166,7 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 	u32 pid = id >> 32;
 	u32 tid = (u32)id;
 
-	if (target_pid >= 0 && target_pid != pid)
+	if (target_pid >= 0 && target_pid != tid)
 		return 0;
 
 	// Look up the malloc event record
