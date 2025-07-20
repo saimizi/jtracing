@@ -109,7 +109,7 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 	if (ptr) {
 		// Create a new malloc record if one doesn't exist
 		u32 zero = 0;
-		struct malloc_record *entry = bpf_map_lookup_elem(&malloc_records, &pid);
+		struct malloc_record *entry = bpf_map_lookup_elem(&malloc_records, &tid);
 		if (!entry) {
 			struct malloc_record *new = bpf_map_lookup_elem(&alloc_heap, &zero);
 			if (new) {
@@ -125,7 +125,7 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 					sizeof(new->ustack),
 					BPF_F_USER_STACK);
 
-				bpf_map_update_elem(&malloc_records, &pid, new, BPF_ANY);
+				bpf_map_update_elem(&malloc_records, &tid, new, BPF_ANY);
 			}
 		} else {
 			// Update existing malloc record
@@ -142,7 +142,7 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 					BPF_F_USER_STACK);
 			}
 
-			bpf_map_update_elem(&malloc_records, &pid, entry, BPF_ANY);
+			bpf_map_update_elem(&malloc_records, &tid, entry, BPF_ANY);
 		}
 
 		// Store the malloc event record
@@ -168,10 +168,10 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 	struct malloc_event *e= bpf_map_lookup_elem(&malloc_event_records, &ptr);
 	if (e) {
 		// Update the malloc record
-		struct malloc_record *entry = bpf_map_lookup_elem(&malloc_records, &pid);
+		struct malloc_record *entry = bpf_map_lookup_elem(&malloc_records, &tid);
 		if (entry) {
 			entry->free_size  += e->size;
-			bpf_map_update_elem(&malloc_records, &pid, entry, BPF_ANY);
+			bpf_map_update_elem(&malloc_records, &tid, entry, BPF_ANY);
 		}
 
 		// Delete the malloc event record

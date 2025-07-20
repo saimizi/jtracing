@@ -90,8 +90,8 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
     let malloc_records = maps.malloc_records();
 
     println!(
-        "{:<4} {:<8} {:<8} {:<8} {:<8} {:<10} {:<8} Comm",
-        "No", "PID", "Alloc", "Free", "Real", "Real.max", "Req.max"
+        "{:<4} {:<8} {:<8} {:<8} {:<8} {:<8} {:<10} {:<8} Comm",
+        "No", "PID", "TID", "Alloc", "Free", "Real", "Real.max", "Req.max"
     );
     let mut idx = 0;
     for key in malloc_records.keys() {
@@ -106,9 +106,10 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
             let comm = unsafe { bytes_to_string(mr.comm.as_ptr()) };
 
             println!(
-                "{:<4} {:<8} {:<8} {:<8} {:<8} {:<10} {:<8} {}",
+                "{:<4} {:<8} {:<8} {:<8} {:<8} {:<8} {:<10} {:<8} {}",
                 idx,
                 mr.pid,
+                mr.tid,
                 mr.alloc_size,
                 mr.free_size,
                 mr.alloc_size - mr.free_size,
