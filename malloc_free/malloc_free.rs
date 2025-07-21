@@ -86,13 +86,17 @@ struct Cli {
     #[clap(short = 'l', long)]
     libpath: Option<String>,
 
-    ///Trace malloc/free path.
+    ///Trace malloc path that is not freed.
     #[clap(short = 't', long)]
     trace_path: bool,
+
+    ///Trace full malloc/free path.
+    #[clap(short = 'T', long)]
+    trace_full_path: bool,
 }
 
 fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceError> {
-    if cli.trace_path {
+    if cli.trace_path || cli.trace_full_path {
         let malloc_events = maps.malloc_event_records();
         let mut events = HashMap::new();
         for key in malloc_events.keys() {
@@ -115,9 +119,12 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
             let tid = event.tid as i32;
             let free_tid = event.free_tid as i32;
 
-            // Only show backtrace for memory region that has not been freed.
-            if event.free_tid as i32 != -1 {
-                continue;
+            // If trace_full_path is enabled, we show all malloc/free events.
+            if !cli.trace_full_path {
+                // Only show backtrace for memory region that has not been freed.
+                if free_tid != -1 {
+                    continue;
+                }
             }
 
             if free_tid == -1 {
@@ -255,7 +262,10 @@ fn main() -> Result<(), JtraceError> {
         open_skel.bss().target_pid = -1;
     }
 
-    if cli.trace_path {
+    if cli.trace_path || cli.trace_full_path {
+        if cli.trace_full_path {
+            jwarn!("Tracing full malloc/free path, this may generate a lot of data and take a lot of time.");
+        }
         open_skel.bss().trace_path = true;
     }
 
