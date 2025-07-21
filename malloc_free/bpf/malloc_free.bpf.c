@@ -22,6 +22,8 @@ struct malloc_event {
 	char free_comm[TASK_COMM_LEN];
 	s32 ustack_sz;
 	u64 ustack[PERF_MAX_STACK_DEPTH];
+	s32 free_ustack_sz;
+	u64 free_ustack[PERF_MAX_STACK_DEPTH];
 };
 
 // Structure to store malloc record data
@@ -214,6 +216,10 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 	if (e) {
 		if (trace_path) {
 			e->free_tid = tid;
+			e->free_ustack_sz =
+				bpf_get_stack(ctx, e->free_ustack,
+					      sizeof(e->free_ustack),
+					      BPF_F_USER_STACK);
 			bpf_get_current_comm(e->free_comm,
 					     sizeof(e->free_comm));
 			bpf_map_update_elem(&malloc_event_records, &ptr, e,

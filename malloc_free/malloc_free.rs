@@ -141,7 +141,7 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
             let ustack = &event.ustack[..ustack_sz];
             match ExecMap::new(tid_to_pid(event.tid as i32).unwrap_or(event.tid as i32) as u32) {
                 Ok(mut em) => {
-                    println!("{:<4} Backtrace:", " ");
+                    println!("{:<4} Backtrace for malloc():", " ");
                     for addr in ustack {
                         let (offset, symbol, file) = em
                             .symbol(*addr)
@@ -159,6 +159,33 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
                 }
             }
             println!();
+
+            if free_tid != -1 {
+                let free_ustack_sz = (event.free_ustack_sz / 8) as usize;
+                let free_ustack = &event.free_ustack[..free_ustack_sz];
+                match ExecMap::new(
+                    tid_to_pid(event.free_tid as i32).unwrap_or(event.tid as i32) as u32,
+                ) {
+                    Ok(mut em) => {
+                        println!("{:<4} Backtrace for free():", " ");
+                        for addr in free_ustack {
+                            let (offset, symbol, file) = em
+                                .symbol(*addr)
+                                .map_err(|e| {
+                                    jwarn!("Failed to get symbol for address {:#x}: {}", addr, e);
+                                    Report::new(JtraceError::SymbolAnalyzerError)
+                                })
+                                .unwrap_or((0, "[unknown]".to_string(), "unknown".to_string()));
+                            println!("{:<4} {:x}(+{})  {} {}", " ", addr, offset, symbol, file);
+                        }
+                    }
+                    Err(e) => {
+                        jwarn!("Failed to get ExecMap for tid {}: {}", event.free_tid, e);
+                        println!("    No map found.");
+                    }
+                }
+                println!();
+            }
         }
         return Ok(());
     }
