@@ -213,3 +213,22 @@ pub unsafe fn bytes_to_string(b: *const i8) -> String {
     }
     ret
 }
+
+pub fn tid_to_pid(tid: i32) -> Option<i32> {
+    use std::fs;
+    use std::io::{self, BufRead};
+
+    // 'Tgid' is the process id.
+    let status_path = format!("/proc/{}/status", tid);
+    let file = fs::File::open(&status_path).ok()?;
+    let reader = io::BufReader::new(file);
+
+    for line in reader.lines() {
+        let line = line.ok()?;
+        if line.starts_with("Tgid:") {
+            let pid_str = line.trim_start_matches("Tgid:").trim();
+            return pid_str.parse::<i32>().ok();
+        }
+    }
+    None
+}

@@ -14,7 +14,8 @@
 #endif
 
 // Structure to store malloc event data
-struct malloc_event{
+struct malloc_event {
+	u32 tid;
 	u32 size;
 };
 
@@ -67,9 +68,7 @@ struct {
 	__type(value, struct malloc_record);
 } malloc_records SEC(".maps");
 
-
 int target_pid = 0;
-
 
 // Uprobe to trace malloc calls
 SEC("uprobe/")
@@ -78,12 +77,13 @@ int BPF_KPROBE(uprobe_malloc, int size)
 	struct malloc_event event;
 	u64 id = bpf_get_current_pid_tgid();
 	u32 pid = id >> 32;
-	u32 tid = (u32) id;
+	u32 tid = (u32)id;
 
 	if (target_pid >= 0 && target_pid != pid)
 		return 0;
 
 	event.size = size;
+	event.tid = tid;
 	bpf_map_update_elem(&event_heap, &tid, &event, BPF_NOEXIST);
 
 	return 0;
@@ -97,8 +97,8 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 {
 	u64 id = bpf_get_current_pid_tgid();
 	u32 pid = id >> 32;
-	u32 tid = (u32) id;
-	
+	u32 tid = (u32)id;
+
 	if (target_pid >= 0 && target_pid != pid)
 		return 0;
 
@@ -109,44 +109,51 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 	if (ptr) {
 		// Create a new malloc record if one doesn't exist
 		u32 zero = 0;
-		struct malloc_record *entry = bpf_map_lookup_elem(&malloc_records, &pid);
+		struct malloc_record *entry =
+			bpf_map_lookup_elem(&malloc_records, &e->tid);
 		if (!entry) {
-			struct malloc_record *new = bpf_map_lookup_elem(&alloc_heap, &zero);
+			struct malloc_record *new =
+				bpf_map_lookup_elem(&alloc_heap, &zero);
 			if (new) {
 				new->pid = pid;
-				new->tid = tid;
+				// Note e->tid is same to tid.
+				new->tid = e->tid;
 				new->alloc_size = e->size;
 				new->free_size = 0;
 				new->max_size = e->size;
 				new->max_req_size = e->size;
-				bpf_get_current_comm(new->comm, sizeof(new->comm));
-				new->ustack_sz = bpf_get_stack(ctx,
-					new->ustack,
-					sizeof(new->ustack),
-					BPF_F_USER_STACK);
+				bpf_get_current_comm(new->comm,
+						     sizeof(new->comm));
+				new->ustack_sz =
+					bpf_get_stack(ctx, new->ustack,
+						      sizeof(new->ustack),
+						      BPF_F_USER_STACK);
 
-				bpf_map_update_elem(&malloc_records, &pid, new, BPF_ANY);
+				bpf_map_update_elem(&malloc_records, &e->tid,
+						    new, BPF_ANY);
 			}
 		} else {
 			// Update existing malloc record
 			entry->alloc_size += e->size;
-			if (REAL_SIZE(entry)> entry->max_size) {
+			if (REAL_SIZE(entry) > entry->max_size) {
 				entry->max_size = REAL_SIZE(entry);
 			}
 
 			if (e->size > entry->max_req_size) {
 				entry->max_req_size = e->size;
-				entry->ustack_sz = bpf_get_stack(ctx, 
-					entry->ustack,
-					sizeof(entry->ustack),
-					BPF_F_USER_STACK);
+				entry->ustack_sz =
+					bpf_get_stack(ctx, entry->ustack,
+						      sizeof(entry->ustack),
+						      BPF_F_USER_STACK);
 			}
 
-			bpf_map_update_elem(&malloc_records, &pid, entry, BPF_ANY);
+			bpf_map_update_elem(&malloc_records, &e->tid, entry,
+					    BPF_ANY);
 		}
 
 		// Store the malloc event record
-		bpf_map_update_elem(&malloc_event_records, &ptr, e, BPF_NOEXIST);
+		bpf_map_update_elem(&malloc_event_records, &ptr, e,
+				    BPF_NOEXIST);
 	}
 
 	// Delete the malloc event
@@ -159,25 +166,29 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 {
 	u64 id = bpf_get_current_pid_tgid();
 	u32 pid = id >> 32;
-	u32 tid = (u32) id;
 
 	if (target_pid >= 0 && target_pid != pid)
 		return 0;
 
 	// Look up the malloc event record
-	struct malloc_event *e= bpf_map_lookup_elem(&malloc_event_records, &ptr);
+	struct malloc_event *e =
+		bpf_map_lookup_elem(&malloc_event_records, &ptr);
 	if (e) {
-		// Update the malloc record
-		struct malloc_record *entry = bpf_map_lookup_elem(&malloc_records, &pid);
+		/* Update the malloc record
+		 * note the record is stored in the key of tid which malloc
+		 * happened. it might be different from the current thread.
+		 */
+		struct malloc_record *entry =
+			bpf_map_lookup_elem(&malloc_records, &e->tid);
 		if (entry) {
-			entry->free_size  += e->size;
-			bpf_map_update_elem(&malloc_records, &pid, entry, BPF_ANY);
+			entry->free_size += e->size;
+			bpf_map_update_elem(&malloc_records, &e->tid, entry,
+					    BPF_ANY);
 		}
 
 		// Delete the malloc event record
 		bpf_map_delete_elem(&malloc_event_records, &ptr);
 	}
-
 
 	return 0;
 }
