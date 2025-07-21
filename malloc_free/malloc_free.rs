@@ -83,70 +83,55 @@ struct Cli {
     ///Specify libc path.
     #[clap(short = 'l', long)]
     libpath: Option<String>,
+
+    ///Trace malloc/free path.
+    #[clap(short = 't', long)]
+    trace_path: bool,
 }
 
 fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceError> {
-    let malloc_records = maps.malloc_records();
-
-    println!(
-        "{:<4} {:<8} {:<8} {:<8} {:<8} {:<8} {:<10} {:<8} Comm",
-        "No", "PID", "TID", "Alloc", "Free", "Real", "Real.max", "Req.max"
-    );
-    let mut idx = 0;
-    for key in malloc_records.keys() {
-        if let Some(data) = malloc_records
-            .lookup(&key, MapFlags::ANY)
-            .change_context(JtraceError::BPFError)?
-        {
-            let mut mr = MallocRecord::default();
-            plain::copy_from_bytes(&mut mr, &data).expect("Corrupted event data");
-
-            idx += 1;
-            let comm = unsafe { bytes_to_string(mr.comm.as_ptr()) };
-
-            println!(
-                "{:<4} {:<8} {:<8} {:<8} {:<8} {:<8} {:<10} {:<8} {}",
-                idx,
-                mr.pid,
-                mr.tid,
-                mr.alloc_size,
-                mr.free_size,
-                mr.alloc_size - mr.free_size,
-                mr.max_size,
-                mr.max_req_size,
-                comm
-            );
-
-            if cli.max_malloc_path {
-                println!("    ----");
-                let ustack_sz = (mr.ustack_sz / 8) as usize;
-                let ustack = &mr.ustack[..ustack_sz];
-
-                match ExecMap::new(mr.pid) {
-                    Ok(mut em) => {
-                        for addr in ustack {
-                            let (offset, symbol, file) = em
-                                .symbol(*addr)
-                                .map_err(|e| {
-                                    jwarn!("Failed to get symbol for address {:#x}: {}", addr, e);
-                                    Report::new(JtraceError::SymbolAnalyzerError)
-                                })
-                                .unwrap_or((0, "[unknown]".to_string(), "unknown".to_string()));
-                            println!("    {:x}(+{})  {} {}", addr, offset, symbol, file);
-                        }
-                    }
-                    Err(e) => {
-                        jwarn!("Failed to get ExecMap for pid {}: {}", mr.pid, e);
-                        println!("    No map found.");
-                    }
-                }
-                println!();
+    if cli.trace_path {
+        let malloc_events = maps.malloc_event_records();
+        let mut events = HashMap::new();
+        for key in malloc_events.keys() {
+            if let Some(data) = malloc_events
+                .lookup(&key, MapFlags::ANY)
+                .change_context(JtraceError::BPFError)?
+            {
+                let mut event = malloc_free_bss_types::malloc_event::default();
+                plain::copy_from_bytes(&mut event, &data).expect("Corrupted event data");
+                events.insert(key, event);
             }
         }
-    }
 
-    Ok(())
-}
+        for (key, event) in events.iter() {
+            println!("malloc addr: {:#x}", key);
+            println!("  malloc tid: {}", event.tid);
+            println!("  malloc size: {}", event.size);
+            println!("  free tid: {}", event.free_tid);
+            let ustack_sz = (event.ustack_sz / 8) as usize;
+            let ustack = &event.ustack[..ustack_sz];
+            match ExecMap::new(tid_to_pid(event.tid).unwrap_or(event.tid)) {
+                Ok(mut em) => {
+                    for addr in ustack {
+                        let (offset, symbol, file) = em
+                            .symbol(*addr)
+                            .map_err(|e| {
+                                jwarn!("Failed to get symbol for address {:#x}: {}", addr, e);
+                                Report::new(JtraceError::SymbolAnalyzerError)
+                            })
+                            .unwrap_or((0, "[unknown]".to_string(), "unknown".to_string()));
+                        println!("    {:x}(+{})  {} {}", addr, offset, symbol, file);
+                    }
+                }
+                Err(e) => {
+                    jwarn!("Failed to get ExecMap for tid {}: {}", event.tid, e);
+                    println!("    No map found.");
+                }
+            }
+        }
+        return Ok(());
+    }
 
 fn main() -> Result<(), JtraceError> {
     let mut cli = Cli::parse();
@@ -183,6 +168,10 @@ fn main() -> Result<(), JtraceError> {
         open_skel.bss().target_pid = pid;
     } else {
         open_skel.bss().target_pid = -1;
+    }
+
+    if cli.trace_path {
+        open_skel.bss().trace_path = true;
     }
 
     let mut skel = open_skel
