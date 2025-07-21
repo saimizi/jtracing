@@ -16,8 +16,10 @@
 // Structure to store malloc event data
 struct malloc_event {
 	u32 tid;
+	char comm[TASK_COMM_LEN];
 	u32 size;
 	u32 free_tid;
+	char free_comm[TASK_COMM_LEN];
 	s32 ustack_sz;
 	u64 ustack[PERF_MAX_STACK_DEPTH];
 };
@@ -36,6 +38,7 @@ struct malloc_record {
 };
 
 struct malloc_record _malloc_record = {};
+struct malloc_event _malloc_event = {};
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
@@ -54,6 +57,14 @@ struct {
 	__type(key, u32);
 	__type(value, struct malloc_record);
 } alloc_heap SEC(".maps");
+
+// Per-CPU array to store malloc events
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, struct malloc_event);
+} event_alloc_heap SEC(".maps");
 
 // Hash map to store malloc events
 struct {
@@ -78,7 +89,12 @@ bool trace_path = false;
 SEC("uprobe/")
 int BPF_KPROBE(uprobe_malloc, int size)
 {
-	struct malloc_event event;
+	u32 zero = 0;
+	struct malloc_event *event =
+		bpf_map_lookup_elem(&event_alloc_heap, &zero);
+	if (!event)
+		return 0;
+
 	u64 id = bpf_get_current_pid_tgid();
 	u32 pid = id >> 32;
 	u32 tid = (u32)id;
@@ -86,14 +102,16 @@ int BPF_KPROBE(uprobe_malloc, int size)
 	if (target_pid >= 0 && target_pid != pid)
 		return 0;
 
-	event.size = size;
-	event.tid = tid;
+	event->size = size;
+	event->tid = tid;
 	if (trace_path) {
-		event.ustack_sz = bpf_get_stack(ctx, event.ustack, sizeof(event.ustack), BPF_F_USER_STACK);
+		event->ustack_sz =
+			bpf_get_stack(ctx, event->ustack, sizeof(event->ustack),
+				      BPF_F_USER_STACK);
 	} else {
-		event.ustack_sz = -1;
+		event->ustack_sz = -1;
 	}
-	bpf_map_update_elem(&event_heap, &tid, &event, BPF_NOEXIST);
+	bpf_map_update_elem(&event_heap, &tid, event, BPF_NOEXIST);
 
 	return 0;
 }
@@ -118,7 +136,11 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 	if (ptr) {
 		if (trace_path) {
 			e->free_tid = -1;
-			bpf_map_update_elem(&malloc_event_records, &ptr, e, BPF_NOEXIST);
+			bpf_get_current_comm(e->comm, sizeof(e->comm));
+			bpf_get_current_comm(e->free_comm,
+					     sizeof(e->free_comm));
+			bpf_map_update_elem(&malloc_event_records, &ptr, e,
+					    BPF_NOEXIST);
 		} else {
 			// Create a new malloc record if one doesn't exist
 			u32 zero = 0;
@@ -137,13 +159,14 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 					new->max_req_size = e->size;
 					bpf_get_current_comm(new->comm,
 							     sizeof(new->comm));
-					new->ustack_sz =
-						bpf_get_stack(ctx, new->ustack,
-							      sizeof(new->ustack),
-							      BPF_F_USER_STACK);
+					new->ustack_sz = bpf_get_stack(
+						ctx, new->ustack,
+						sizeof(new->ustack),
+						BPF_F_USER_STACK);
 
-					bpf_map_update_elem(&malloc_records, &e->tid,
-							    new, BPF_ANY);
+					bpf_map_update_elem(&malloc_records,
+							    &e->tid, new,
+							    BPF_ANY);
 				}
 			} else {
 				// Update existing malloc record
@@ -154,14 +177,14 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 
 				if (e->size > entry->max_req_size) {
 					entry->max_req_size = e->size;
-					entry->ustack_sz =
-						bpf_get_stack(ctx, entry->ustack,
-							      sizeof(entry->ustack),
-							      BPF_F_USER_STACK);
+					entry->ustack_sz = bpf_get_stack(
+						ctx, entry->ustack,
+						sizeof(entry->ustack),
+						BPF_F_USER_STACK);
 				}
 
-				bpf_map_update_elem(&malloc_records, &e->tid, entry,
-						    BPF_ANY);
+				bpf_map_update_elem(&malloc_records, &e->tid,
+						    entry, BPF_ANY);
 			}
 
 			// Store the malloc event record
@@ -191,7 +214,10 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 	if (e) {
 		if (trace_path) {
 			e->free_tid = tid;
-			bpf_map_update_elem(&malloc_event_records, &ptr, e, BPF_ANY);
+			bpf_get_current_comm(e->free_comm,
+					     sizeof(e->free_comm));
+			bpf_map_update_elem(&malloc_event_records, &ptr, e,
+					    BPF_ANY);
 		} else {
 			/* Update the malloc record
 			 * note the record is stored in the key of tid which malloc
@@ -201,8 +227,8 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 				bpf_map_lookup_elem(&malloc_records, &e->tid);
 			if (entry) {
 				entry->free_size += e->size;
-				bpf_map_update_elem(&malloc_records, &e->tid, entry,
-						    BPF_ANY);
+				bpf_map_update_elem(&malloc_records, &e->tid,
+						    entry, BPF_ANY);
 			}
 
 			// Delete the malloc event record
