@@ -31,6 +31,8 @@ use malloc_free::*;
 
 type MallocRecord = malloc_free_bss_types::malloc_record;
 unsafe impl Plain for MallocRecord {}
+type MallocEvent = malloc_free_bss_types::malloc_event;
+unsafe impl Plain for MallocEvent {}
 
 fn print_to_log(level: PrintLevel, msg: String) {
     match level {
@@ -83,9 +85,111 @@ struct Cli {
     ///Specify libc path.
     #[clap(short = 'l', long)]
     libpath: Option<String>,
+
+    ///Trace malloc path that is not freed.
+    #[clap(short = 't', long)]
+    trace_path: bool,
+
+    ///Trace full malloc/free path.
+    #[clap(short = 'T', long)]
+    trace_full_path: bool,
 }
 
 fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceError> {
+    if cli.trace_path || cli.trace_full_path {
+        let malloc_events = maps.malloc_event_records();
+        let mut events = HashMap::new();
+        for key in malloc_events.keys() {
+            if let Some(data) = malloc_events
+                .lookup(&key, MapFlags::ANY)
+                .change_context(JtraceError::BPFError)?
+            {
+                let mut event = MallocEvent::default();
+                plain::copy_from_bytes(&mut event, &data).expect("Corrupted event data");
+                events.insert(key, event);
+            }
+        }
+
+        let mut idx = 1_usize;
+        println!("{:<4} {:<8}", "No", "Size");
+        for (_key, event) in events.iter() {
+            let comm = unsafe { bytes_to_string(event.comm.as_ptr()) };
+            let free_comm = unsafe { bytes_to_string(event.free_comm.as_ptr()) };
+
+            let tid = event.tid as i32;
+            let free_tid = event.free_tid as i32;
+
+            // If trace_full_path is enabled, we show all malloc/free events.
+            if !cli.trace_full_path {
+                // Only show backtrace for memory region that has not been freed.
+                if free_tid != -1 {
+                    continue;
+                }
+            }
+
+            if free_tid == -1 {
+                println!("{:<4} {:<8} malloc: {:<10}({})", idx, event.size, comm, tid);
+            } else {
+                println!(
+                    "{:<4} {:<8} malloc: {:<10}({}) free: {:<10}({})",
+                    idx, event.size, comm, tid, free_comm, free_tid
+                );
+            }
+            idx += 1;
+
+            let ustack_sz = (event.ustack_sz / 8) as usize;
+            let ustack = &event.ustack[..ustack_sz];
+            match ExecMap::new(tid_to_pid(event.tid as i32).unwrap_or(event.tid as i32) as u32) {
+                Ok(mut em) => {
+                    println!("{:<4} Backtrace for malloc():", " ");
+                    for addr in ustack {
+                        let (offset, symbol, file) = em
+                            .symbol(*addr)
+                            .map_err(|e| {
+                                jwarn!("Failed to get symbol for address {:#x}: {}", addr, e);
+                                Report::new(JtraceError::SymbolAnalyzerError)
+                            })
+                            .unwrap_or((0, "[unknown]".to_string(), "unknown".to_string()));
+                        println!("{:<4} {:x}(+{})  {} {}", " ", addr, offset, symbol, file);
+                    }
+                }
+                Err(e) => {
+                    jwarn!("Failed to get ExecMap for tid {}: {}", event.tid, e);
+                    println!("    No map found.");
+                }
+            }
+            println!();
+
+            if free_tid != -1 {
+                let free_ustack_sz = (event.free_ustack_sz / 8) as usize;
+                let free_ustack = &event.free_ustack[..free_ustack_sz];
+                match ExecMap::new(
+                    tid_to_pid(event.free_tid as i32).unwrap_or(event.tid as i32) as u32,
+                ) {
+                    Ok(mut em) => {
+                        println!("{:<4} Backtrace for free():", " ");
+                        for addr in free_ustack {
+                            let (offset, symbol, file) = em
+                                .symbol(*addr)
+                                .map_err(|e| {
+                                    jwarn!("Failed to get symbol for address {:#x}: {}", addr, e);
+                                    Report::new(JtraceError::SymbolAnalyzerError)
+                                })
+                                .unwrap_or((0, "[unknown]".to_string(), "unknown".to_string()));
+                            println!("{:<4} {:x}(+{})  {} {}", " ", addr, offset, symbol, file);
+                        }
+                    }
+                    Err(e) => {
+                        jwarn!("Failed to get ExecMap for tid {}: {}", event.free_tid, e);
+                        println!("    No map found.");
+                    }
+                }
+                println!();
+            }
+        }
+        return Ok(());
+    }
+
     let malloc_records = maps.malloc_records();
 
     println!(
@@ -183,6 +287,13 @@ fn main() -> Result<(), JtraceError> {
         open_skel.bss().target_pid = pid;
     } else {
         open_skel.bss().target_pid = -1;
+    }
+
+    if cli.trace_path || cli.trace_full_path {
+        if cli.trace_full_path {
+            jwarn!("Tracing full malloc/free path, this may generate a lot of data and take a lot of time.");
+        }
+        open_skel.bss().trace_path = true;
     }
 
     let mut skel = open_skel
