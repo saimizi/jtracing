@@ -5,6 +5,12 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
+// Error code constants (from errno.h)
+#define ENOMEM 12   /* Out of memory */
+#define EEXIST 17   /* File exists */
+#define ENOENT 2    /* No such file or directory */
+#define E2BIG  7    /* Argument list too long (used for map full) */
+
 #ifndef TASK_COMM_LEN
 #define TASK_COMM_LEN 16
 #endif
@@ -20,6 +26,7 @@ struct malloc_event {
 	u32 size;
 	u32 free_tid;
 	char free_comm[TASK_COMM_LEN];
+	u64 sequence;
 	s32 ustack_sz;
 	u64 ustack[PERF_MAX_STACK_DEPTH];
 	s32 free_ustack_sz;
@@ -39,16 +46,33 @@ struct malloc_record {
 	u64 ustack[PERF_MAX_STACK_DEPTH];
 };
 
+// Compound key for malloc_event_records to ensure uniqueness
+struct malloc_event_key {
+	void *ptr;
+	u64 sequence;
+};
+
+// Map to track sequence numbers for each pointer
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 16384);
+	__type(key, void *);
+	__type(value, u64);
+} ptr_sequence SEC(".maps");
+
 struct malloc_record _malloc_record = {};
 struct malloc_event _malloc_event = {};
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
+// Configuration variables set from userspace  
+u32 max_stack_depth = PERF_MAX_STACK_DEPTH;
+
 // Hash map to store malloc event records
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 8192);
-	__type(key, void *);
+	__uint(max_entries, 16384); // Will be configured from userspace
+	__type(key, struct malloc_event_key);
 	__type(value, struct malloc_event);
 } malloc_event_records SEC(".maps");
 
@@ -68,28 +92,88 @@ struct {
 	__type(value, struct malloc_event);
 } event_alloc_heap SEC(".maps");
 
-// Hash map to store malloc events
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 1024);
-	__type(key, u32);
-	__type(value, struct malloc_event);
-} event_heap SEC(".maps");
 
 // Hash map to store malloc records
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 1024);
+	__uint(max_entries, 2048); // Will be configured from userspace
 	__type(key, u32);
 	__type(value, struct malloc_record);
 } malloc_records SEC(".maps");
 
+// Statistics counters
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 20);
+	__type(key, u32);
+	__type(value, u64);
+} stats SEC(".maps");
+
+// Statistics indices  
+#define STAT_MALLOC_CALLS 0
+#define STAT_CALLOC_CALLS 1
+#define STAT_REALLOC_CALLS 2
+#define STAT_ALIGNED_ALLOC_CALLS 3
+#define STAT_FREE_CALLS 4
+#define STAT_EVENT_DROPS_MAP_FULL 5
+#define STAT_EVENT_DROPS_INVALID_KEY 6
+#define STAT_EVENT_DROPS_NOMEM 7
+#define STAT_EVENT_DROPS_OTHERS 8
+#define STAT_RECORD_DROPS_MAP_FULL 9
+#define STAT_RECORD_DROPS_INVALID_KEY 10
+#define STAT_RECORD_DROPS_NOMEM 11
+#define STAT_RECORD_DROPS_OTHERS 12
+#define STAT_SYMBOL_FAILURES 13
+#define STAT_ACTIVE_EVENTS 14
+#define STAT_ACTIVE_RECORDS 15
+
 int target_pid = 0;
 bool trace_path = false;
 
-// Uprobe to trace malloc calls
-SEC("uprobe/")
-int BPF_KPROBE(uprobe_malloc, int size)
+static void increment_stat(u32 stat_key) {
+	u64 *count = bpf_map_lookup_elem(&stats, &stat_key);
+	if (count)
+		__sync_fetch_and_add(count, 1);
+}
+
+static void increment_event_drop_stat(int ret) {
+	switch (ret) {
+	case -E2BIG:
+		increment_stat(STAT_EVENT_DROPS_MAP_FULL);
+		break;
+	case -EEXIST:
+	case -ENOENT:
+		increment_stat(STAT_EVENT_DROPS_INVALID_KEY);
+		break;
+	case -ENOMEM:
+		increment_stat(STAT_EVENT_DROPS_NOMEM);
+		break;
+	default:
+		increment_stat(STAT_EVENT_DROPS_OTHERS);
+		break;
+	}
+}
+
+static void increment_record_drop_stat(int ret) {
+	switch (ret) {
+	case -E2BIG:
+		increment_stat(STAT_RECORD_DROPS_MAP_FULL);
+		break;
+	case -EEXIST:
+	case -ENOENT:
+		increment_stat(STAT_RECORD_DROPS_INVALID_KEY);
+		break;
+	case -ENOMEM:
+		increment_stat(STAT_RECORD_DROPS_NOMEM);
+		break;
+	default:
+		increment_stat(STAT_RECORD_DROPS_OTHERS);
+		break;
+	}
+}
+
+// Helper function for common allocation logic
+static int handle_alloc_entry(void *ctx, u32 size, u32 stat_type)
 {
 	u32 zero = 0;
 	struct malloc_event *event =
@@ -104,25 +188,60 @@ int BPF_KPROBE(uprobe_malloc, int size)
 	if (target_pid >= 0 && target_pid != pid)
 		return 0;
 
+	increment_stat(stat_type);
+
 	event->size = size;
 	event->tid = tid;
 	if (trace_path) {
+		u32 max_depth = max_stack_depth;
+		if (max_depth > PERF_MAX_STACK_DEPTH)
+			max_depth = PERF_MAX_STACK_DEPTH;
+		u32 stack_size = max_depth * sizeof(u64);
 		event->ustack_sz =
-			bpf_get_stack(ctx, event->ustack, sizeof(event->ustack),
+			bpf_get_stack(ctx, event->ustack, stack_size,
 				      BPF_F_USER_STACK);
 	} else {
 		event->ustack_sz = -1;
 	}
-	bpf_map_update_elem(&event_heap, &tid, event, BPF_NOEXIST);
+	
+	// Event data is now stored in per-CPU event_alloc_heap, no need to update
 
 	return 0;
 }
 
+// Uprobe to trace malloc calls
+SEC("uprobe/")
+int BPF_KPROBE(uprobe_malloc, int size)
+{
+	return handle_alloc_entry(ctx, size, STAT_MALLOC_CALLS);
+}
+
+// Uprobe to trace calloc calls
+SEC("uprobe/")
+int BPF_KPROBE(uprobe_calloc, size_t nmemb, size_t size)
+{
+	u32 total_size = nmemb * size;
+	return handle_alloc_entry(ctx, total_size, STAT_CALLOC_CALLS);
+}
+
+// Uprobe to trace realloc calls  
+SEC("uprobe/")
+int BPF_KPROBE(uprobe_realloc, void *ptr, size_t size)
+{
+	return handle_alloc_entry(ctx, size, STAT_REALLOC_CALLS);
+}
+
+// Uprobe to trace aligned_alloc calls
+SEC("uprobe/")
+int BPF_KPROBE(uprobe_aligned_alloc, size_t alignment, size_t size)
+{
+	return handle_alloc_entry(ctx, size, STAT_ALIGNED_ALLOC_CALLS);
+}
+
 #define REAL_SIZE(entry) (entry->alloc_size - entry->free_size)
 
-// Uretprobe to trace malloc return values
-SEC("uprobe/")
-int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
+// Helper function for common allocation return logic
+static int handle_alloc_return(void *ctx, void *ptr)
 {
 	u64 id = bpf_get_current_pid_tgid();
 	u32 pid = id >> 32;
@@ -131,18 +250,36 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 	if (target_pid >= 0 && target_pid != pid)
 		return 0;
 
-	struct malloc_event *e = bpf_map_lookup_elem(&event_heap, &tid);
+	u32 zero = 0;
+	struct malloc_event *e = bpf_map_lookup_elem(&event_alloc_heap, &zero);
 	if (!e)
 		return 0;
 
 	if (ptr) {
+		// Get and increment sequence number for this pointer
+		u64 *seq = bpf_map_lookup_elem(&ptr_sequence, &ptr);
+		u64 sequence = seq ? (*seq + 1) : 1;
+		bpf_map_update_elem(&ptr_sequence, &ptr, &sequence, BPF_ANY);
+		
 		if (trace_path) {
 			e->free_tid = -1;
+			e->sequence = sequence;
 			bpf_get_current_comm(e->comm, sizeof(e->comm));
 			bpf_get_current_comm(e->free_comm,
 					     sizeof(e->free_comm));
-			bpf_map_update_elem(&malloc_event_records, &ptr, e,
+			
+			struct malloc_event_key key = {
+				.ptr = ptr,
+				.sequence = sequence
+			};
+			
+			int ret = bpf_map_update_elem(&malloc_event_records, &key, e,
 					    BPF_NOEXIST);
+			if (ret != 0) {
+				increment_event_drop_stat(ret);
+			} else {
+				increment_stat(STAT_ACTIVE_EVENTS);
+			}
 		} else {
 			// Create a new malloc record if one doesn't exist
 			u32 zero = 0;
@@ -166,9 +303,14 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 						sizeof(new->ustack),
 						BPF_F_USER_STACK);
 
-					bpf_map_update_elem(&malloc_records,
+					int ret = bpf_map_update_elem(&malloc_records,
 							    &e->tid, new,
 							    BPF_ANY);
+					if (ret != 0) {
+						increment_record_drop_stat(ret);
+					} else {
+						increment_stat(STAT_ACTIVE_RECORDS);
+					}
 				}
 			} else {
 				// Update existing malloc record
@@ -189,14 +331,51 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 						    entry, BPF_ANY);
 			}
 
-			// Store the malloc event record
-			bpf_map_update_elem(&malloc_event_records, &ptr, e,
+			// Store the malloc event record with compound key
+			e->sequence = sequence;
+			struct malloc_event_key key = {
+				.ptr = ptr,
+				.sequence = sequence
+			};
+			
+			int ret = bpf_map_update_elem(&malloc_event_records, &key, e,
 					    BPF_NOEXIST);
+			if (ret != 0) {
+				increment_event_drop_stat(ret);
+			}
 		}
 	}
 
-	// Delete the malloc event
-	bpf_map_delete_elem(&event_heap, &tid);
+	// No cleanup needed for per-CPU event_alloc_heap
+	return 0;
+}
+
+// Uretprobe to trace malloc return values
+SEC("uprobe/")
+int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
+{
+	return handle_alloc_return(ctx, ptr);
+}
+
+// Uretprobe to trace calloc return values
+SEC("uprobe/")
+int BPF_KRETPROBE(uretprobe_calloc, void *ptr)
+{
+	return handle_alloc_return(ctx, ptr);
+}
+
+// Uretprobe to trace realloc return values
+SEC("uprobe/")
+int BPF_KRETPROBE(uretprobe_realloc, void *ptr)
+{
+	return handle_alloc_return(ctx, ptr);
+}
+
+// Uretprobe to trace aligned_alloc return values
+SEC("uprobe/")
+int BPF_KRETPROBE(uretprobe_aligned_alloc, void *ptr)
+{
+	return handle_alloc_return(ctx, ptr);
 }
 
 // Uprobe to trace free calls
@@ -210,19 +389,34 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 	if (target_pid >= 0 && target_pid != pid)
 		return 0;
 
-	// Look up the malloc event record
-	struct malloc_event *e =
-		bpf_map_lookup_elem(&malloc_event_records, &ptr);
+	increment_stat(STAT_FREE_CALLS);
+
+	// Get the current sequence number for this pointer
+	u64 *seq = bpf_map_lookup_elem(&ptr_sequence, &ptr);
+	if (!seq)
+		return 0; // No malloc record for this pointer
+	
+	// Look up the most recent malloc event record using compound key
+	struct malloc_event_key key = {
+		.ptr = ptr,
+		.sequence = *seq
+	};
+	
+	struct malloc_event *e = bpf_map_lookup_elem(&malloc_event_records, &key);
 	if (e) {
 		if (trace_path) {
 			e->free_tid = tid;
+			u32 max_depth = max_stack_depth;
+			if (max_depth > PERF_MAX_STACK_DEPTH)
+				max_depth = PERF_MAX_STACK_DEPTH;
+			u32 stack_size = max_depth * sizeof(u64);
 			e->free_ustack_sz =
 				bpf_get_stack(ctx, e->free_ustack,
-					      sizeof(e->free_ustack),
+					      stack_size,
 					      BPF_F_USER_STACK);
 			bpf_get_current_comm(e->free_comm,
 					     sizeof(e->free_comm));
-			bpf_map_update_elem(&malloc_event_records, &ptr, e,
+			bpf_map_update_elem(&malloc_event_records, &key, e,
 					    BPF_ANY);
 		} else {
 			/* Update the malloc record
@@ -238,7 +432,7 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 			}
 
 			// Delete the malloc event record
-			bpf_map_delete_elem(&malloc_event_records, &ptr);
+			bpf_map_delete_elem(&malloc_event_records, &key);
 		}
 	}
 

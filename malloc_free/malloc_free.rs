@@ -51,6 +51,7 @@ Examples:
     malloc_free -d 10 -l /lib/x86_64-linux-gnu/
     malloc_free -d 10 -m
     malloc_free -l /lib/x86_64-linux-gnu/ -p 3226
+    malloc_free --max-events 16384 --max-records 2048 -s
 
 Output Examples:
     No   PID      Alloc    Free     Real     Real.max   Req.max  Comm
@@ -93,6 +94,22 @@ struct Cli {
     ///Trace full malloc/free path.
     #[clap(short = 'T', long)]
     trace_full_path: bool,
+
+    ///Maximum malloc events to track (default: 8192).
+    #[clap(long, default_value_t = 8192_u32)]
+    max_events: u32,
+
+    ///Maximum process records to track (default: 1024).
+    #[clap(long, default_value_t = 1024_u32)]
+    max_records: u32,
+
+    ///Maximum stack frames to capture (default: 128).
+    #[clap(long, default_value_t = 128_u32)]
+    max_stack_depth: u32,
+
+    ///Show statistics and map utilization.
+    #[clap(short = 's', long)]
+    show_stats: bool,
 }
 
 fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceError> {
@@ -252,6 +269,114 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
     Ok(())
 }
 
+fn print_statistics(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceError> {
+    let stats_map = maps.stats();
+
+    println!("\n=== Statistics ===");
+
+    // Read statistics from all CPUs and sum them up
+    let mut stats_totals = vec![0u64; 20];
+    for cpu in 0..num_cpus::get() {
+        for stat_idx in 0..20 {
+            let key_bytes = (stat_idx as u32).to_ne_bytes();
+            if let Some(data) = stats_map
+                .lookup_percpu(&key_bytes, MapFlags::ANY)
+                .change_context(JtraceError::BPFError)?
+            {
+                if let Some(cpu_data) = data.get(cpu) {
+                    let mut value = 0u64;
+                    let mut cursor = Cursor::new(cpu_data);
+                    if cursor.read_u64::<NativeEndian>().is_ok() {
+                        cursor.set_position(0);
+                        value = cursor.read_u64::<NativeEndian>().unwrap_or(0);
+                    }
+                    stats_totals[stat_idx] += value;
+                }
+            }
+        }
+    }
+
+    println!("  Malloc calls: {}", stats_totals[0]);
+    println!("  Calloc calls: {}", stats_totals[1]);
+    println!("  Realloc calls: {}", stats_totals[2]);
+    println!("  Aligned_alloc calls: {}", stats_totals[3]);
+    println!("  Free calls: {}", stats_totals[4]);
+
+    let total_alloc_calls = stats_totals[0] + stats_totals[1] + stats_totals[2] + stats_totals[3];
+    println!("  Total allocation calls: {}", total_alloc_calls);
+
+    // Event drop statistics
+    let total_event_drops = stats_totals[5] + stats_totals[6] + stats_totals[7] + stats_totals[8];
+    println!("  Event drops: {} (total)", total_event_drops);
+    if total_event_drops > 0 {
+        println!("    - Map full: {}", stats_totals[5]);
+        println!("    - Invalid key: {}", stats_totals[6]);
+        println!("    - Out of memory: {}", stats_totals[7]);
+        println!("    - Other errors: {}", stats_totals[8]);
+    }
+
+    // Record drop statistics
+    let total_record_drops =
+        stats_totals[9] + stats_totals[10] + stats_totals[11] + stats_totals[12];
+    println!("  Record drops: {} (total)", total_record_drops);
+    if total_record_drops > 0 {
+        println!("    - Map full: {}", stats_totals[9]);
+        println!("    - Invalid key: {}", stats_totals[10]);
+        println!("    - Out of memory: {}", stats_totals[11]);
+        println!("    - Other errors: {}", stats_totals[12]);
+    }
+
+    println!("  Symbol failures: {}", stats_totals[13]);
+    println!("  Active events: {}", stats_totals[14]);
+    println!("  Active records: {}", stats_totals[15]);
+
+    // Calculate map utilization
+    let malloc_records = maps.malloc_records();
+    let mut record_count = 0;
+    for _key in malloc_records.keys() {
+        record_count += 1;
+    }
+
+    let malloc_event_records = maps.malloc_event_records();
+    let mut event_count = 0;
+    for _key in malloc_event_records.keys() {
+        event_count += 1;
+    }
+
+    println!("\n=== Map Utilization ===");
+    println!(
+        "  Event records: {}/{} ({:.1}%)",
+        event_count,
+        cli.max_events,
+        (event_count as f64 / cli.max_events as f64) * 100.0
+    );
+    println!(
+        "  Process records: {}/{} ({:.1}%)",
+        record_count,
+        cli.max_records,
+        (record_count as f64 / cli.max_records as f64) * 100.0
+    );
+
+    let total_drops = total_event_drops + total_record_drops;
+    if total_drops > 0 {
+        println!("\n⚠️  WARNING: {} drops detected!", total_drops);
+        if stats_totals[5] > 0 || stats_totals[9] > 0 {
+            println!("   - Maps are full! Consider increasing --max-events or --max-records");
+        }
+        if stats_totals[7] > 0 || stats_totals[11] > 0 {
+            println!("   - Out of memory detected! System may be under heavy load");
+        }
+        if stats_totals[6] > 0 || stats_totals[10] > 0 {
+            println!("   - Key conflicts detected! This may indicate internal issues");
+        }
+        if stats_totals[8] > 0 || stats_totals[12] > 0 {
+            println!("   - Other system errors detected");
+        }
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<(), JtraceError> {
     let mut cli = Cli::parse();
     let max_level = match cli.verbose {
@@ -269,11 +394,43 @@ fn main() -> Result<(), JtraceError> {
     bump_memlock_rlimit();
     set_print(Some((PrintLevel::Debug, print_to_log)));
 
+    // Validate configuration parameters
+    if cli.max_stack_depth > 128 {
+        return Err(Report::new(JtraceError::InvalidData)
+            .attach_printable("max_stack_depth cannot exceed 128"));
+    }
+
     let skel_builder = MallocFreeSkelBuilder::default();
     let mut open_skel = skel_builder
         .open()
         .map_err(|_| Report::new(JtraceError::BPFError))
         .attach_printable("Failed to open bpf")?;
+
+    // Configure BPF map sizes before loading
+    open_skel
+        .maps_mut()
+        .malloc_event_records()
+        .set_max_entries(cli.max_events)
+        .map_err(|_| Report::new(JtraceError::BPFError))
+        .attach_printable("Failed to set malloc_event_records max_entries")?;
+
+    open_skel
+        .maps_mut()
+        .malloc_records()
+        .set_max_entries(cli.max_records)
+        .map_err(|_| Report::new(JtraceError::BPFError))
+        .attach_printable("Failed to set malloc_records max_entries")?;
+
+    open_skel
+        .maps_mut()
+        .ptr_sequence()
+        .set_max_entries(cli.max_events)
+        .map_err(|_| Report::new(JtraceError::BPFError))
+        .attach_printable("Failed to set ptr_sequence max_entries")?;
+
+    // Set BPF runtime configuration variables
+    // TODO: max_stack_depth configuration not exposed in skeleton
+    // open_skel.bss().max_stack_depth = cli.max_stack_depth;
 
     if let Some(id) = cli.pid.as_ref() {
         let pid = tid_to_pid(*id).ok_or(
@@ -312,6 +469,13 @@ fn main() -> Result<(), JtraceError> {
         .find_addr("malloc")
         .change_context(JtraceError::SymbolAnalyzerError)? as usize;
 
+    let calloc_offset = elf_file.find_addr("calloc").ok().map(|addr| addr as usize);
+    let realloc_offset = elf_file.find_addr("realloc").ok().map(|addr| addr as usize);
+    let aligned_alloc_offset = elf_file
+        .find_addr("aligned_alloc")
+        .ok()
+        .map(|addr| addr as usize);
+
     let free_offset = elf_file
         .find_addr("free")
         .change_context(JtraceError::SymbolAnalyzerError)? as usize;
@@ -323,6 +487,7 @@ fn main() -> Result<(), JtraceError> {
      *  pid == -1 : trace all processes
      * See bpf_program__attach_uprobe()
      */
+    // Attach malloc probes
     links.push(
         skel.progs_mut()
             .uprobe_malloc()
@@ -339,6 +504,82 @@ fn main() -> Result<(), JtraceError> {
             .attach_printable("Failed to attach uretprobe_malloc.".to_string())?,
     );
 
+    // Attach calloc probes (if available)
+    if let Some(offset) = calloc_offset {
+        links.push(
+            skel.progs_mut()
+                .uprobe_calloc()
+                .attach_uprobe(false, -1, file.clone(), offset)
+                .map_err(|_| Report::new(JtraceError::BPFError))
+                .attach_printable("Failed to attach uprobe_calloc.".to_string())?,
+        );
+
+        links.push(
+            skel.progs_mut()
+                .uretprobe_calloc()
+                .attach_uprobe(true, -1, file.clone(), offset)
+                .map_err(|_| Report::new(JtraceError::BPFError))
+                .attach_printable("Failed to attach uretprobe_calloc.".to_string())?,
+        );
+        jinfo!("Attached calloc probes");
+    } else {
+        jwarn!(
+            "calloc function not found in {}, skipping calloc tracing",
+            file
+        );
+    }
+
+    // Attach realloc probes (if available)
+    if let Some(offset) = realloc_offset {
+        links.push(
+            skel.progs_mut()
+                .uprobe_realloc()
+                .attach_uprobe(false, -1, file.clone(), offset)
+                .map_err(|_| Report::new(JtraceError::BPFError))
+                .attach_printable("Failed to attach uprobe_realloc.".to_string())?,
+        );
+
+        links.push(
+            skel.progs_mut()
+                .uretprobe_realloc()
+                .attach_uprobe(true, -1, file.clone(), offset)
+                .map_err(|_| Report::new(JtraceError::BPFError))
+                .attach_printable("Failed to attach uretprobe_realloc.".to_string())?,
+        );
+        jinfo!("Attached realloc probes");
+    } else {
+        jwarn!(
+            "realloc function not found in {}, skipping realloc tracing",
+            file
+        );
+    }
+
+    // Attach aligned_alloc probes (if available)
+    if let Some(offset) = aligned_alloc_offset {
+        links.push(
+            skel.progs_mut()
+                .uprobe_aligned_alloc()
+                .attach_uprobe(false, -1, file.clone(), offset)
+                .map_err(|_| Report::new(JtraceError::BPFError))
+                .attach_printable("Failed to attach uprobe_aligned_alloc.".to_string())?,
+        );
+
+        links.push(
+            skel.progs_mut()
+                .uretprobe_aligned_alloc()
+                .attach_uprobe(true, -1, file.clone(), offset)
+                .map_err(|_| Report::new(JtraceError::BPFError))
+                .attach_printable("Failed to attach uretprobe_aligned_alloc.".to_string())?,
+        );
+        jinfo!("Attached aligned_alloc probes");
+    } else {
+        jwarn!(
+            "aligned_alloc function not found in {}, skipping aligned_alloc tracing",
+            file
+        );
+    }
+
+    // Attach free probe
     links.push(
         skel.progs_mut()
             .uprobe_free()
@@ -383,5 +624,11 @@ fn main() -> Result<(), JtraceError> {
 
     println!("Tracing finished, Processing data...");
     println!();
+
+    if cli.show_stats {
+        print_statistics(&cli, &mut skel.maps())?;
+        println!();
+    }
+
     process_events(&cli, &mut skel.maps())
 }
