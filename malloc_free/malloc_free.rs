@@ -275,9 +275,9 @@ fn print_statistics(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceEr
     println!("\n=== Statistics ===");
 
     // Read statistics from all CPUs and sum them up
-    let mut stats_totals = vec![0u64; 16];
+    let mut stats_totals = vec![0u64; 20];
     for cpu in 0..num_cpus::get() {
-        for stat_idx in 0..16 {
+        for stat_idx in 0..20 {
             let key_bytes = (stat_idx as u32).to_ne_bytes();
             if let Some(data) = stats_map
                 .lookup_percpu(&key_bytes, MapFlags::ANY)
@@ -353,16 +353,16 @@ fn print_statistics(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceEr
     let total_drops = total_event_drops + total_record_drops;
     if total_drops > 0 {
         println!("\n⚠️  WARNING: {} drops detected!", total_drops);
-        if stats_totals[2] > 0 || stats_totals[6] > 0 {
+        if stats_totals[5] > 0 || stats_totals[9] > 0 {
             println!("   - Maps are full! Consider increasing --max-events or --max-records");
         }
-        if stats_totals[4] > 0 || stats_totals[8] > 0 {
+        if stats_totals[7] > 0 || stats_totals[11] > 0 {
             println!("   - Out of memory detected! System may be under heavy load");
         }
-        if stats_totals[3] > 0 || stats_totals[7] > 0 {
+        if stats_totals[6] > 0 || stats_totals[10] > 0 {
             println!("   - Key conflicts detected! This may indicate internal issues");
         }
-        if stats_totals[5] > 0 || stats_totals[9] > 0 {
+        if stats_totals[8] > 0 || stats_totals[12] > 0 {
             println!("   - Other system errors detected");
         }
     }
@@ -462,6 +462,13 @@ fn main() -> Result<(), JtraceError> {
         .find_addr("malloc")
         .change_context(JtraceError::SymbolAnalyzerError)? as usize;
 
+    let calloc_offset = elf_file.find_addr("calloc").ok().map(|addr| addr as usize);
+    let realloc_offset = elf_file.find_addr("realloc").ok().map(|addr| addr as usize);
+    let aligned_alloc_offset = elf_file
+        .find_addr("aligned_alloc")
+        .ok()
+        .map(|addr| addr as usize);
+
     let free_offset = elf_file
         .find_addr("free")
         .change_context(JtraceError::SymbolAnalyzerError)? as usize;
@@ -473,6 +480,7 @@ fn main() -> Result<(), JtraceError> {
      *  pid == -1 : trace all processes
      * See bpf_program__attach_uprobe()
      */
+    // Attach malloc probes
     links.push(
         skel.progs_mut()
             .uprobe_malloc()
@@ -489,6 +497,82 @@ fn main() -> Result<(), JtraceError> {
             .attach_printable("Failed to attach uretprobe_malloc.".to_string())?,
     );
 
+    // Attach calloc probes (if available)
+    if let Some(offset) = calloc_offset {
+        links.push(
+            skel.progs_mut()
+                .uprobe_calloc()
+                .attach_uprobe(false, -1, file.clone(), offset)
+                .map_err(|_| Report::new(JtraceError::BPFError))
+                .attach_printable("Failed to attach uprobe_calloc.".to_string())?,
+        );
+
+        links.push(
+            skel.progs_mut()
+                .uretprobe_calloc()
+                .attach_uprobe(true, -1, file.clone(), offset)
+                .map_err(|_| Report::new(JtraceError::BPFError))
+                .attach_printable("Failed to attach uretprobe_calloc.".to_string())?,
+        );
+        jinfo!("Attached calloc probes");
+    } else {
+        jwarn!(
+            "calloc function not found in {}, skipping calloc tracing",
+            file
+        );
+    }
+
+    // Attach realloc probes (if available)
+    if let Some(offset) = realloc_offset {
+        links.push(
+            skel.progs_mut()
+                .uprobe_realloc()
+                .attach_uprobe(false, -1, file.clone(), offset)
+                .map_err(|_| Report::new(JtraceError::BPFError))
+                .attach_printable("Failed to attach uprobe_realloc.".to_string())?,
+        );
+
+        links.push(
+            skel.progs_mut()
+                .uretprobe_realloc()
+                .attach_uprobe(true, -1, file.clone(), offset)
+                .map_err(|_| Report::new(JtraceError::BPFError))
+                .attach_printable("Failed to attach uretprobe_realloc.".to_string())?,
+        );
+        jinfo!("Attached realloc probes");
+    } else {
+        jwarn!(
+            "realloc function not found in {}, skipping realloc tracing",
+            file
+        );
+    }
+
+    // Attach aligned_alloc probes (if available)
+    if let Some(offset) = aligned_alloc_offset {
+        links.push(
+            skel.progs_mut()
+                .uprobe_aligned_alloc()
+                .attach_uprobe(false, -1, file.clone(), offset)
+                .map_err(|_| Report::new(JtraceError::BPFError))
+                .attach_printable("Failed to attach uprobe_aligned_alloc.".to_string())?,
+        );
+
+        links.push(
+            skel.progs_mut()
+                .uretprobe_aligned_alloc()
+                .attach_uprobe(true, -1, file.clone(), offset)
+                .map_err(|_| Report::new(JtraceError::BPFError))
+                .attach_printable("Failed to attach uretprobe_aligned_alloc.".to_string())?,
+        );
+        jinfo!("Attached aligned_alloc probes");
+    } else {
+        jwarn!(
+            "aligned_alloc function not found in {}, skipping aligned_alloc tracing",
+            file
+        );
+    }
+
+    // Attach free probe
     links.push(
         skel.progs_mut()
             .uprobe_free()

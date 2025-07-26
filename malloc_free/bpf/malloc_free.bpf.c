@@ -104,25 +104,28 @@ struct {
 // Statistics counters
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 16);
+	__uint(max_entries, 20);
 	__type(key, u32);
 	__type(value, u64);
 } stats SEC(".maps");
 
-// Statistics indices
+// Statistics indices  
 #define STAT_MALLOC_CALLS 0
-#define STAT_FREE_CALLS 1
-#define STAT_EVENT_DROPS_MAP_FULL 2
-#define STAT_EVENT_DROPS_INVALID_KEY 3
-#define STAT_EVENT_DROPS_NOMEM 4
-#define STAT_EVENT_DROPS_OTHERS 5
-#define STAT_RECORD_DROPS_MAP_FULL 6
-#define STAT_RECORD_DROPS_INVALID_KEY 7
-#define STAT_RECORD_DROPS_NOMEM 8
-#define STAT_RECORD_DROPS_OTHERS 9
-#define STAT_SYMBOL_FAILURES 10
-#define STAT_ACTIVE_EVENTS 11
-#define STAT_ACTIVE_RECORDS 12
+#define STAT_CALLOC_CALLS 1
+#define STAT_REALLOC_CALLS 2
+#define STAT_ALIGNED_ALLOC_CALLS 3
+#define STAT_FREE_CALLS 4
+#define STAT_EVENT_DROPS_MAP_FULL 5
+#define STAT_EVENT_DROPS_INVALID_KEY 6
+#define STAT_EVENT_DROPS_NOMEM 7
+#define STAT_EVENT_DROPS_OTHERS 8
+#define STAT_RECORD_DROPS_MAP_FULL 9
+#define STAT_RECORD_DROPS_INVALID_KEY 10
+#define STAT_RECORD_DROPS_NOMEM 11
+#define STAT_RECORD_DROPS_OTHERS 12
+#define STAT_SYMBOL_FAILURES 13
+#define STAT_ACTIVE_EVENTS 14
+#define STAT_ACTIVE_RECORDS 15
 
 int target_pid = 0;
 bool trace_path = false;
@@ -169,9 +172,8 @@ static void increment_record_drop_stat(int ret) {
 	}
 }
 
-// Uprobe to trace malloc calls
-SEC("uprobe/")
-int BPF_KPROBE(uprobe_malloc, int size)
+// Helper function for common allocation logic
+static int handle_alloc_entry(void *ctx, u32 size, u32 stat_type)
 {
 	u32 zero = 0;
 	struct malloc_event *event =
@@ -186,7 +188,7 @@ int BPF_KPROBE(uprobe_malloc, int size)
 	if (target_pid >= 0 && target_pid != pid)
 		return 0;
 
-	increment_stat(STAT_MALLOC_CALLS);
+	increment_stat(stat_type);
 
 	event->size = size;
 	event->tid = tid;
@@ -207,11 +209,39 @@ int BPF_KPROBE(uprobe_malloc, int size)
 	return 0;
 }
 
+// Uprobe to trace malloc calls
+SEC("uprobe/")
+int BPF_KPROBE(uprobe_malloc, int size)
+{
+	return handle_alloc_entry(ctx, size, STAT_MALLOC_CALLS);
+}
+
+// Uprobe to trace calloc calls
+SEC("uprobe/")
+int BPF_KPROBE(uprobe_calloc, size_t nmemb, size_t size)
+{
+	u32 total_size = nmemb * size;
+	return handle_alloc_entry(ctx, total_size, STAT_CALLOC_CALLS);
+}
+
+// Uprobe to trace realloc calls  
+SEC("uprobe/")
+int BPF_KPROBE(uprobe_realloc, void *ptr, size_t size)
+{
+	return handle_alloc_entry(ctx, size, STAT_REALLOC_CALLS);
+}
+
+// Uprobe to trace aligned_alloc calls
+SEC("uprobe/")
+int BPF_KPROBE(uprobe_aligned_alloc, size_t alignment, size_t size)
+{
+	return handle_alloc_entry(ctx, size, STAT_ALIGNED_ALLOC_CALLS);
+}
+
 #define REAL_SIZE(entry) (entry->alloc_size - entry->free_size)
 
-// Uretprobe to trace malloc return values
-SEC("uprobe/")
-int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
+// Helper function for common allocation return logic
+static int handle_alloc_return(void *ctx, void *ptr)
 {
 	u64 id = bpf_get_current_pid_tgid();
 	u32 pid = id >> 32;
@@ -317,6 +347,35 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 	}
 
 	// No cleanup needed for per-CPU event_alloc_heap
+	return 0;
+}
+
+// Uretprobe to trace malloc return values
+SEC("uprobe/")
+int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
+{
+	return handle_alloc_return(ctx, ptr);
+}
+
+// Uretprobe to trace calloc return values
+SEC("uprobe/")
+int BPF_KRETPROBE(uretprobe_calloc, void *ptr)
+{
+	return handle_alloc_return(ctx, ptr);
+}
+
+// Uretprobe to trace realloc return values
+SEC("uprobe/")
+int BPF_KRETPROBE(uretprobe_realloc, void *ptr)
+{
+	return handle_alloc_return(ctx, ptr);
+}
+
+// Uretprobe to trace aligned_alloc return values
+SEC("uprobe/")
+int BPF_KRETPROBE(uretprobe_aligned_alloc, void *ptr)
+{
+	return handle_alloc_return(ctx, ptr);
 }
 
 // Uprobe to trace free calls
