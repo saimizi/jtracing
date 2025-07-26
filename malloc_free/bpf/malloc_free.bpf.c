@@ -26,6 +26,7 @@ struct malloc_event {
 	u32 size;
 	u32 free_tid;
 	char free_comm[TASK_COMM_LEN];
+	u64 sequence;
 	s32 ustack_sz;
 	u64 ustack[PERF_MAX_STACK_DEPTH];
 	s32 free_ustack_sz;
@@ -45,6 +46,20 @@ struct malloc_record {
 	u64 ustack[PERF_MAX_STACK_DEPTH];
 };
 
+// Compound key for malloc_event_records to ensure uniqueness
+struct malloc_event_key {
+	void *ptr;
+	u64 sequence;
+};
+
+// Map to track sequence numbers for each pointer
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 16384);
+	__type(key, void *);
+	__type(value, u64);
+} ptr_sequence SEC(".maps");
+
 struct malloc_record _malloc_record = {};
 struct malloc_event _malloc_event = {};
 
@@ -57,7 +72,7 @@ u32 max_stack_depth = PERF_MAX_STACK_DEPTH;
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 16384); // Will be configured from userspace
-	__type(key, void *);
+	__type(key, struct malloc_event_key);
 	__type(value, struct malloc_event);
 } malloc_event_records SEC(".maps");
 
@@ -211,12 +226,24 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 		return 0;
 
 	if (ptr) {
+		// Get and increment sequence number for this pointer
+		u64 *seq = bpf_map_lookup_elem(&ptr_sequence, &ptr);
+		u64 sequence = seq ? (*seq + 1) : 1;
+		bpf_map_update_elem(&ptr_sequence, &ptr, &sequence, BPF_ANY);
+		
 		if (trace_path) {
 			e->free_tid = -1;
+			e->sequence = sequence;
 			bpf_get_current_comm(e->comm, sizeof(e->comm));
 			bpf_get_current_comm(e->free_comm,
 					     sizeof(e->free_comm));
-			int ret = bpf_map_update_elem(&malloc_event_records, &ptr, e,
+			
+			struct malloc_event_key key = {
+				.ptr = ptr,
+				.sequence = sequence
+			};
+			
+			int ret = bpf_map_update_elem(&malloc_event_records, &key, e,
 					    BPF_NOEXIST);
 			if (ret != 0) {
 				increment_event_drop_stat(ret);
@@ -274,8 +301,14 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 						    entry, BPF_ANY);
 			}
 
-			// Store the malloc event record
-			int ret = bpf_map_update_elem(&malloc_event_records, &ptr, e,
+			// Store the malloc event record with compound key
+			e->sequence = sequence;
+			struct malloc_event_key key = {
+				.ptr = ptr,
+				.sequence = sequence
+			};
+			
+			int ret = bpf_map_update_elem(&malloc_event_records, &key, e,
 					    BPF_NOEXIST);
 			if (ret != 0) {
 				increment_event_drop_stat(ret);
@@ -299,9 +332,18 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 
 	increment_stat(STAT_FREE_CALLS);
 
-	// Look up the malloc event record
-	struct malloc_event *e =
-		bpf_map_lookup_elem(&malloc_event_records, &ptr);
+	// Get the current sequence number for this pointer
+	u64 *seq = bpf_map_lookup_elem(&ptr_sequence, &ptr);
+	if (!seq)
+		return 0; // No malloc record for this pointer
+	
+	// Look up the most recent malloc event record using compound key
+	struct malloc_event_key key = {
+		.ptr = ptr,
+		.sequence = *seq
+	};
+	
+	struct malloc_event *e = bpf_map_lookup_elem(&malloc_event_records, &key);
 	if (e) {
 		if (trace_path) {
 			e->free_tid = tid;
@@ -315,7 +357,7 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 					      BPF_F_USER_STACK);
 			bpf_get_current_comm(e->free_comm,
 					     sizeof(e->free_comm));
-			bpf_map_update_elem(&malloc_event_records, &ptr, e,
+			bpf_map_update_elem(&malloc_event_records, &key, e,
 					    BPF_ANY);
 		} else {
 			/* Update the malloc record
@@ -331,7 +373,7 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 			}
 
 			// Delete the malloc event record
-			bpf_map_delete_elem(&malloc_event_records, &ptr);
+			bpf_map_delete_elem(&malloc_event_records, &key);
 		}
 	}
 

@@ -414,6 +414,13 @@ fn main() -> Result<(), JtraceError> {
         .map_err(|_| Report::new(JtraceError::BPFError))
         .attach_printable("Failed to set malloc_records max_entries")?;
 
+    open_skel
+        .maps_mut()
+        .ptr_sequence()
+        .set_max_entries(cli.max_events)
+        .map_err(|_| Report::new(JtraceError::BPFError))
+        .attach_printable("Failed to set ptr_sequence max_entries")?;
+
     // Set BPF runtime configuration variables
     // TODO: max_stack_depth configuration not exposed in skeleton
     // open_skel.bss().max_stack_depth = cli.max_stack_depth;
