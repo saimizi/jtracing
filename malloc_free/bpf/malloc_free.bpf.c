@@ -44,10 +44,15 @@ struct malloc_event _malloc_event = {};
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
+// Configuration variables set from userspace
+u32 max_events = 8192;
+u32 max_records = 1024;
+u32 max_stack_depth = PERF_MAX_STACK_DEPTH;
+
 // Hash map to store malloc event records
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 8192);
+	__uint(max_entries, 16384); // Will be configured from userspace
 	__type(key, void *);
 	__type(value, struct malloc_event);
 } malloc_event_records SEC(".maps");
@@ -71,7 +76,7 @@ struct {
 // Hash map to store malloc events
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 1024);
+	__uint(max_entries, 2048); // Will be configured from userspace
 	__type(key, u32);
 	__type(value, struct malloc_event);
 } event_heap SEC(".maps");
@@ -79,13 +84,36 @@ struct {
 // Hash map to store malloc records
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 1024);
+	__uint(max_entries, 2048); // Will be configured from userspace
 	__type(key, u32);
 	__type(value, struct malloc_record);
 } malloc_records SEC(".maps");
 
+// Statistics counters
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 8);
+	__type(key, u32);
+	__type(value, u64);
+} stats SEC(".maps");
+
+// Statistics indices
+#define STAT_MALLOC_CALLS 0
+#define STAT_FREE_CALLS 1
+#define STAT_EVENT_DROPS 2
+#define STAT_RECORD_DROPS 3
+#define STAT_SYMBOL_FAILURES 4
+#define STAT_ACTIVE_EVENTS 5
+#define STAT_ACTIVE_RECORDS 6
+
 int target_pid = 0;
 bool trace_path = false;
+
+static void increment_stat(u32 stat_key) {
+	u64 *count = bpf_map_lookup_elem(&stats, &stat_key);
+	if (count)
+		__sync_fetch_and_add(count, 1);
+}
 
 // Uprobe to trace malloc calls
 SEC("uprobe/")
@@ -104,16 +132,25 @@ int BPF_KPROBE(uprobe_malloc, int size)
 	if (target_pid >= 0 && target_pid != pid)
 		return 0;
 
+	increment_stat(STAT_MALLOC_CALLS);
+
 	event->size = size;
 	event->tid = tid;
 	if (trace_path) {
+		u32 stack_size = max_stack_depth * sizeof(u64);
+		if (stack_size > sizeof(event->ustack))
+			stack_size = sizeof(event->ustack);
 		event->ustack_sz =
-			bpf_get_stack(ctx, event->ustack, sizeof(event->ustack),
+			bpf_get_stack(ctx, event->ustack, stack_size,
 				      BPF_F_USER_STACK);
 	} else {
 		event->ustack_sz = -1;
 	}
-	bpf_map_update_elem(&event_heap, &tid, event, BPF_NOEXIST);
+	
+	int ret = bpf_map_update_elem(&event_heap, &tid, event, BPF_NOEXIST);
+	if (ret != 0) {
+		increment_stat(STAT_EVENT_DROPS);
+	}
 
 	return 0;
 }
@@ -141,8 +178,13 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 			bpf_get_current_comm(e->comm, sizeof(e->comm));
 			bpf_get_current_comm(e->free_comm,
 					     sizeof(e->free_comm));
-			bpf_map_update_elem(&malloc_event_records, &ptr, e,
+			int ret = bpf_map_update_elem(&malloc_event_records, &ptr, e,
 					    BPF_NOEXIST);
+			if (ret != 0) {
+				increment_stat(STAT_EVENT_DROPS);
+			} else {
+				increment_stat(STAT_ACTIVE_EVENTS);
+			}
 		} else {
 			// Create a new malloc record if one doesn't exist
 			u32 zero = 0;
@@ -166,9 +208,14 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 						sizeof(new->ustack),
 						BPF_F_USER_STACK);
 
-					bpf_map_update_elem(&malloc_records,
+					int ret = bpf_map_update_elem(&malloc_records,
 							    &e->tid, new,
 							    BPF_ANY);
+					if (ret != 0) {
+						increment_stat(STAT_RECORD_DROPS);
+					} else {
+						increment_stat(STAT_ACTIVE_RECORDS);
+					}
 				}
 			} else {
 				// Update existing malloc record
@@ -190,8 +237,11 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 			}
 
 			// Store the malloc event record
-			bpf_map_update_elem(&malloc_event_records, &ptr, e,
+			int ret = bpf_map_update_elem(&malloc_event_records, &ptr, e,
 					    BPF_NOEXIST);
+			if (ret != 0) {
+				increment_stat(STAT_EVENT_DROPS);
+			}
 		}
 	}
 
@@ -210,15 +260,20 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 	if (target_pid >= 0 && target_pid != pid)
 		return 0;
 
+	increment_stat(STAT_FREE_CALLS);
+
 	// Look up the malloc event record
 	struct malloc_event *e =
 		bpf_map_lookup_elem(&malloc_event_records, &ptr);
 	if (e) {
 		if (trace_path) {
 			e->free_tid = tid;
+			u32 stack_size = max_stack_depth * sizeof(u64);
+			if (stack_size > sizeof(e->free_ustack))
+				stack_size = sizeof(e->free_ustack);
 			e->free_ustack_sz =
 				bpf_get_stack(ctx, e->free_ustack,
-					      sizeof(e->free_ustack),
+					      stack_size,
 					      BPF_F_USER_STACK);
 			bpf_get_current_comm(e->free_comm,
 					     sizeof(e->free_comm));

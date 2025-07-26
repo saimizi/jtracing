@@ -51,6 +51,7 @@ Examples:
     malloc_free -d 10 -l /lib/x86_64-linux-gnu/
     malloc_free -d 10 -m
     malloc_free -l /lib/x86_64-linux-gnu/ -p 3226
+    malloc_free --max-events 16384 --max-records 2048 -s
 
 Output Examples:
     No   PID      Alloc    Free     Real     Real.max   Req.max  Comm
@@ -93,6 +94,22 @@ struct Cli {
     ///Trace full malloc/free path.
     #[clap(short = 'T', long)]
     trace_full_path: bool,
+
+    ///Maximum malloc events to track (default: 8192).
+    #[clap(long, default_value_t = 8192_u32)]
+    max_events: u32,
+
+    ///Maximum process records to track (default: 1024).
+    #[clap(long, default_value_t = 1024_u32)]
+    max_records: u32,
+
+    ///Maximum stack frames to capture (default: 128).
+    #[clap(long, default_value_t = 128_u32)]
+    max_stack_depth: u32,
+
+    ///Show statistics and map utilization.
+    #[clap(short = 's', long)]
+    show_stats: bool,
 }
 
 fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceError> {
@@ -252,6 +269,66 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
     Ok(())
 }
 
+fn print_statistics(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceError> {
+    let stats_map = maps.stats();
+    
+    println!("\n=== Statistics ===");
+    
+    // Read statistics from all CPUs and sum them up
+    let mut stats_totals = vec![0u64; 8];
+    for cpu in 0..num_cpus::get() {
+        for stat_idx in 0..8 {
+            let key_bytes = (stat_idx as u32).to_ne_bytes();
+            if let Some(data) = stats_map
+                .lookup_percpu(&key_bytes, MapFlags::ANY)
+                .change_context(JtraceError::BPFError)?
+            {
+                if let Some(cpu_data) = data.get(cpu) {
+                    let mut value = 0u64;
+                    let mut cursor = Cursor::new(cpu_data);
+                    if cursor.read_u64::<NativeEndian>().is_ok() {
+                        cursor.set_position(0);
+                        value = cursor.read_u64::<NativeEndian>().unwrap_or(0);
+                    }
+                    stats_totals[stat_idx] += value;
+                }
+            }
+        }
+    }
+    
+    println!("  Malloc calls: {}", stats_totals[0]);
+    println!("  Free calls: {}", stats_totals[1]);
+    println!("  Event drops: {}", stats_totals[2]);
+    println!("  Record drops: {}", stats_totals[3]);
+    println!("  Symbol failures: {}", stats_totals[4]);
+    println!("  Active events: {}", stats_totals[5]);
+    println!("  Active records: {}", stats_totals[6]);
+    
+    // Calculate map utilization
+    let malloc_records = maps.malloc_records();
+    let mut record_count = 0;
+    for _key in malloc_records.keys() {
+        record_count += 1;
+    }
+    
+    let malloc_event_records = maps.malloc_event_records(); 
+    let mut event_count = 0;
+    for _key in malloc_event_records.keys() {
+        event_count += 1;
+    }
+    
+    println!("\n=== Map Utilization ===");
+    println!("  Event records: {}/{} ({:.1}%)", event_count, cli.max_events, (event_count as f64 / cli.max_events as f64) * 100.0);
+    println!("  Process records: {}/{} ({:.1}%)", record_count, cli.max_records, (record_count as f64 / cli.max_records as f64) * 100.0);
+    
+    if stats_totals[2] > 0 || stats_totals[3] > 0 {
+        println!("\n⚠️  WARNING: {} event drops, {} record drops detected!", stats_totals[2], stats_totals[3]);
+        println!("   Consider increasing --max-events or --max-records");
+    }
+    
+    Ok(())
+}
+
 fn main() -> Result<(), JtraceError> {
     let mut cli = Cli::parse();
     let max_level = match cli.verbose {
@@ -269,11 +346,20 @@ fn main() -> Result<(), JtraceError> {
     bump_memlock_rlimit();
     set_print(Some((PrintLevel::Debug, print_to_log)));
 
+    // Validate configuration parameters
+    if cli.max_stack_depth > 128 {
+        return Err(Report::new(JtraceError::InvalidData)
+            .attach_printable("max_stack_depth cannot exceed 128"));
+    }
+
     let skel_builder = MallocFreeSkelBuilder::default();
     let mut open_skel = skel_builder
         .open()
         .map_err(|_| Report::new(JtraceError::BPFError))
         .attach_printable("Failed to open bpf")?;
+
+    // Configure BPF program parameters (these will be used for runtime configuration)
+    // Note: The BPF map sizes are fixed at compile time, but we track limits for statistics
 
     if let Some(id) = cli.pid.as_ref() {
         let pid = tid_to_pid(*id).ok_or(
@@ -383,5 +469,11 @@ fn main() -> Result<(), JtraceError> {
 
     println!("Tracing finished, Processing data...");
     println!();
+    
+    if cli.show_stats {
+        print_statistics(&cli, &mut skel.maps())?;
+        println!();
+    }
+    
     process_events(&cli, &mut skel.maps())
 }
