@@ -14,8 +14,9 @@ use {
     plain::Plain,
     std::{
         collections::HashMap,
-        io::Cursor,
+        io::{self, BufRead, BufReader, Cursor},
         mem,
+        path::Path,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
@@ -33,6 +34,52 @@ type MallocRecord = malloc_free_bss_types::malloc_record;
 unsafe impl Plain for MallocRecord {}
 type MallocEvent = malloc_free_bss_types::malloc_event;
 unsafe impl Plain for MallocEvent {}
+
+fn find_libc_path_from_proc_maps() -> Option<String> {
+    let maps_path = format!("/proc/{}/maps", std::process::id());
+    let file = match std::fs::File::open(&maps_path) {
+        Ok(f) => f,
+        Err(e) => {
+            jwarn!("Failed to open {}: {}", maps_path, e);
+            return None;
+        }
+    };
+
+    let reader = BufReader::new(file);
+    for line in reader.lines() {
+        if let Ok(l) = line {
+            if l.contains("libc.so.6") && l.contains(".so") {
+                // Extract the path, which is usually the last part of the line after a space
+                if let Some(path_str) = l.split_whitespace().last() {
+                    jinfo!("Found libc.so.6 in proc maps: {}", path_str);
+                    return Some(path_str.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn find_libc_path() -> Option<String> {
+    if let Some(path) = find_libc_path_from_proc_maps() {
+        return Some(path);
+    }
+
+    let common_paths = [
+        "/lib/x86_64-linux-gnu/libc.so.6",
+        "/usr/lib/libc.so.6",
+        "/lib/libc.so.6",
+    ];
+
+    for path_str in &common_paths {
+        let path = Path::new(path_str);
+        if path.exists() {
+            jinfo!("Found libc.so.6 at {}", path_str);
+            return Some(path_str.to_string());
+        }
+    }
+    None
+}
 
 fn print_to_log(level: PrintLevel, msg: String) {
     match level {
@@ -459,10 +506,15 @@ fn main() -> Result<(), JtraceError> {
         .attach_printable("Failed to load bpf")?;
 
     let mut links = vec![];
-    let file = format!(
-        "{}/libc.so.6",
-        cli.libpath.take().unwrap_or("/lib".to_string())
-    );
+    let file = if let Some(path) = cli.libpath.take() {
+        path
+    } else if let Some(path) = find_libc_path() {
+        path
+    } else {
+        return Err(Report::new(JtraceError::InvalidData).attach_printable(
+            "Could not find libc.so.6. Please specify the path using -l or --libpath. Common paths include /lib/x86_64-linux-gnu/libc.so.6, /usr/lib/libc.so.6, or /lib/libc.so.6.",
+        ));
+    };
 
     let elf_file = ElfFile::new(&file).change_context(JtraceError::SymbolAnalyzerError)?;
     let malloc_offset = elf_file
