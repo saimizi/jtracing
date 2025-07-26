@@ -44,9 +44,7 @@ struct malloc_event _malloc_event = {};
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
-// Configuration variables set from userspace
-u32 max_events = 8192;
-u32 max_records = 1024;
+// Configuration variables set from userspace  
 u32 max_stack_depth = PERF_MAX_STACK_DEPTH;
 
 // Hash map to store malloc event records
@@ -137,9 +135,10 @@ int BPF_KPROBE(uprobe_malloc, int size)
 	event->size = size;
 	event->tid = tid;
 	if (trace_path) {
-		u32 stack_size = max_stack_depth * sizeof(u64);
-		if (stack_size > sizeof(event->ustack))
-			stack_size = sizeof(event->ustack);
+		u32 max_depth = max_stack_depth;
+		if (max_depth > PERF_MAX_STACK_DEPTH)
+			max_depth = PERF_MAX_STACK_DEPTH;
+		u32 stack_size = max_depth * sizeof(u64);
 		event->ustack_sz =
 			bpf_get_stack(ctx, event->ustack, stack_size,
 				      BPF_F_USER_STACK);
@@ -268,9 +267,10 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 	if (e) {
 		if (trace_path) {
 			e->free_tid = tid;
-			u32 stack_size = max_stack_depth * sizeof(u64);
-			if (stack_size > sizeof(e->free_ustack))
-				stack_size = sizeof(e->free_ustack);
+			u32 max_depth = max_stack_depth;
+			if (max_depth > PERF_MAX_STACK_DEPTH)
+				max_depth = PERF_MAX_STACK_DEPTH;
+			u32 stack_size = max_depth * sizeof(u64);
 			e->free_ustack_sz =
 				bpf_get_stack(ctx, e->free_ustack,
 					      stack_size,

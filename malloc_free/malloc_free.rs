@@ -358,8 +358,22 @@ fn main() -> Result<(), JtraceError> {
         .map_err(|_| Report::new(JtraceError::BPFError))
         .attach_printable("Failed to open bpf")?;
 
-    // Configure BPF program parameters (these will be used for runtime configuration)
-    // Note: The BPF map sizes are fixed at compile time, but we track limits for statistics
+    // Configure BPF map sizes before loading
+    open_skel.maps_mut().malloc_event_records().set_max_entries(cli.max_events)
+        .map_err(|_| Report::new(JtraceError::BPFError))
+        .attach_printable("Failed to set malloc_event_records max_entries")?;
+    
+    open_skel.maps_mut().event_heap().set_max_entries(cli.max_events)
+        .map_err(|_| Report::new(JtraceError::BPFError))
+        .attach_printable("Failed to set event_heap max_entries")?;
+        
+    open_skel.maps_mut().malloc_records().set_max_entries(cli.max_records)
+        .map_err(|_| Report::new(JtraceError::BPFError))
+        .attach_printable("Failed to set malloc_records max_entries")?;
+
+    // Set BPF runtime configuration variables
+    // TODO: max_stack_depth configuration not exposed in skeleton
+    // open_skel.bss().max_stack_depth = cli.max_stack_depth;
 
     if let Some(id) = cli.pid.as_ref() {
         let pid = tid_to_pid(*id).ok_or(
