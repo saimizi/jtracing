@@ -271,9 +271,9 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
 
 fn print_statistics(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceError> {
     let stats_map = maps.stats();
-    
+
     println!("\n=== Statistics ===");
-    
+
     // Read statistics from all CPUs and sum them up
     let mut stats_totals = vec![0u64; 8];
     for cpu in 0..num_cpus::get() {
@@ -295,7 +295,7 @@ fn print_statistics(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceEr
             }
         }
     }
-    
+
     println!("  Malloc calls: {}", stats_totals[0]);
     println!("  Free calls: {}", stats_totals[1]);
     println!("  Event drops: {}", stats_totals[2]);
@@ -303,29 +303,42 @@ fn print_statistics(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceEr
     println!("  Symbol failures: {}", stats_totals[4]);
     println!("  Active events: {}", stats_totals[5]);
     println!("  Active records: {}", stats_totals[6]);
-    
+
     // Calculate map utilization
     let malloc_records = maps.malloc_records();
     let mut record_count = 0;
     for _key in malloc_records.keys() {
         record_count += 1;
     }
-    
-    let malloc_event_records = maps.malloc_event_records(); 
+
+    let malloc_event_records = maps.malloc_event_records();
     let mut event_count = 0;
     for _key in malloc_event_records.keys() {
         event_count += 1;
     }
-    
+
     println!("\n=== Map Utilization ===");
-    println!("  Event records: {}/{} ({:.1}%)", event_count, cli.max_events, (event_count as f64 / cli.max_events as f64) * 100.0);
-    println!("  Process records: {}/{} ({:.1}%)", record_count, cli.max_records, (record_count as f64 / cli.max_records as f64) * 100.0);
-    
+    println!(
+        "  Event records: {}/{} ({:.1}%)",
+        event_count,
+        cli.max_events,
+        (event_count as f64 / cli.max_events as f64) * 100.0
+    );
+    println!(
+        "  Process records: {}/{} ({:.1}%)",
+        record_count,
+        cli.max_records,
+        (record_count as f64 / cli.max_records as f64) * 100.0
+    );
+
     if stats_totals[2] > 0 || stats_totals[3] > 0 {
-        println!("\n⚠️  WARNING: {} event drops, {} record drops detected!", stats_totals[2], stats_totals[3]);
+        println!(
+            "\n⚠️  WARNING: {} event drops, {} record drops detected!",
+            stats_totals[2], stats_totals[3]
+        );
         println!("   Consider increasing --max-events or --max-records");
     }
-    
+
     Ok(())
 }
 
@@ -359,15 +372,24 @@ fn main() -> Result<(), JtraceError> {
         .attach_printable("Failed to open bpf")?;
 
     // Configure BPF map sizes before loading
-    open_skel.maps_mut().malloc_event_records().set_max_entries(cli.max_events)
+    open_skel
+        .maps_mut()
+        .malloc_event_records()
+        .set_max_entries(cli.max_events)
         .map_err(|_| Report::new(JtraceError::BPFError))
         .attach_printable("Failed to set malloc_event_records max_entries")?;
-    
-    open_skel.maps_mut().event_heap().set_max_entries(cli.max_events)
+
+    open_skel
+        .maps_mut()
+        .event_heap()
+        .set_max_entries(cli.max_events)
         .map_err(|_| Report::new(JtraceError::BPFError))
         .attach_printable("Failed to set event_heap max_entries")?;
-        
-    open_skel.maps_mut().malloc_records().set_max_entries(cli.max_records)
+
+    open_skel
+        .maps_mut()
+        .malloc_records()
+        .set_max_entries(cli.max_records)
         .map_err(|_| Report::new(JtraceError::BPFError))
         .attach_printable("Failed to set malloc_records max_entries")?;
 
@@ -483,11 +505,11 @@ fn main() -> Result<(), JtraceError> {
 
     println!("Tracing finished, Processing data...");
     println!();
-    
+
     if cli.show_stats {
         print_statistics(&cli, &mut skel.maps())?;
         println!();
     }
-    
+
     process_events(&cli, &mut skel.maps())
 }
