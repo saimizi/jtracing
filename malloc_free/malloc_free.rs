@@ -275,9 +275,9 @@ fn print_statistics(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceEr
     println!("\n=== Statistics ===");
 
     // Read statistics from all CPUs and sum them up
-    let mut stats_totals = vec![0u64; 8];
+    let mut stats_totals = vec![0u64; 16];
     for cpu in 0..num_cpus::get() {
-        for stat_idx in 0..8 {
+        for stat_idx in 0..16 {
             let key_bytes = (stat_idx as u32).to_ne_bytes();
             if let Some(data) = stats_map
                 .lookup_percpu(&key_bytes, MapFlags::ANY)
@@ -298,11 +298,30 @@ fn print_statistics(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceEr
 
     println!("  Malloc calls: {}", stats_totals[0]);
     println!("  Free calls: {}", stats_totals[1]);
-    println!("  Event drops: {}", stats_totals[2]);
-    println!("  Record drops: {}", stats_totals[3]);
-    println!("  Symbol failures: {}", stats_totals[4]);
-    println!("  Active events: {}", stats_totals[5]);
-    println!("  Active records: {}", stats_totals[6]);
+
+    // Event drop statistics
+    let total_event_drops = stats_totals[2] + stats_totals[3] + stats_totals[4] + stats_totals[5];
+    println!("  Event drops: {} (total)", total_event_drops);
+    if total_event_drops > 0 {
+        println!("    - Map full: {}", stats_totals[2]);
+        println!("    - Invalid key: {}", stats_totals[3]);
+        println!("    - Out of memory: {}", stats_totals[4]);
+        println!("    - Other errors: {}", stats_totals[5]);
+    }
+
+    // Record drop statistics
+    let total_record_drops = stats_totals[6] + stats_totals[7] + stats_totals[8] + stats_totals[9];
+    println!("  Record drops: {} (total)", total_record_drops);
+    if total_record_drops > 0 {
+        println!("    - Map full: {}", stats_totals[6]);
+        println!("    - Invalid key: {}", stats_totals[7]);
+        println!("    - Out of memory: {}", stats_totals[8]);
+        println!("    - Other errors: {}", stats_totals[9]);
+    }
+
+    println!("  Symbol failures: {}", stats_totals[10]);
+    println!("  Active events: {}", stats_totals[11]);
+    println!("  Active records: {}", stats_totals[12]);
 
     // Calculate map utilization
     let malloc_records = maps.malloc_records();
@@ -331,12 +350,21 @@ fn print_statistics(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceEr
         (record_count as f64 / cli.max_records as f64) * 100.0
     );
 
-    if stats_totals[2] > 0 || stats_totals[3] > 0 {
-        println!(
-            "\n⚠️  WARNING: {} event drops, {} record drops detected!",
-            stats_totals[2], stats_totals[3]
-        );
-        println!("   Consider increasing --max-events or --max-records");
+    let total_drops = total_event_drops + total_record_drops;
+    if total_drops > 0 {
+        println!("\n⚠️  WARNING: {} drops detected!", total_drops);
+        if stats_totals[2] > 0 || stats_totals[6] > 0 {
+            println!("   - Maps are full! Consider increasing --max-events or --max-records");
+        }
+        if stats_totals[4] > 0 || stats_totals[8] > 0 {
+            println!("   - Out of memory detected! System may be under heavy load");
+        }
+        if stats_totals[3] > 0 || stats_totals[7] > 0 {
+            println!("   - Key conflicts detected! This may indicate internal issues");
+        }
+        if stats_totals[5] > 0 || stats_totals[9] > 0 {
+            println!("   - Other system errors detected");
+        }
     }
 
     Ok(())

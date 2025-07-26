@@ -5,6 +5,12 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
+// Error code constants (from errno.h)
+#define ENOMEM 12   /* Out of memory */
+#define EEXIST 17   /* File exists */
+#define ENOENT 2    /* No such file or directory */
+#define E2BIG  7    /* Argument list too long (used for map full) */
+
 #ifndef TASK_COMM_LEN
 #define TASK_COMM_LEN 16
 #endif
@@ -90,7 +96,7 @@ struct {
 // Statistics counters
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 8);
+	__uint(max_entries, 16);
 	__type(key, u32);
 	__type(value, u64);
 } stats SEC(".maps");
@@ -98,11 +104,17 @@ struct {
 // Statistics indices
 #define STAT_MALLOC_CALLS 0
 #define STAT_FREE_CALLS 1
-#define STAT_EVENT_DROPS 2
-#define STAT_RECORD_DROPS 3
-#define STAT_SYMBOL_FAILURES 4
-#define STAT_ACTIVE_EVENTS 5
-#define STAT_ACTIVE_RECORDS 6
+#define STAT_EVENT_DROPS_MAP_FULL 2
+#define STAT_EVENT_DROPS_INVALID_KEY 3
+#define STAT_EVENT_DROPS_NOMEM 4
+#define STAT_EVENT_DROPS_OTHERS 5
+#define STAT_RECORD_DROPS_MAP_FULL 6
+#define STAT_RECORD_DROPS_INVALID_KEY 7
+#define STAT_RECORD_DROPS_NOMEM 8
+#define STAT_RECORD_DROPS_OTHERS 9
+#define STAT_SYMBOL_FAILURES 10
+#define STAT_ACTIVE_EVENTS 11
+#define STAT_ACTIVE_RECORDS 12
 
 int target_pid = 0;
 bool trace_path = false;
@@ -111,6 +123,42 @@ static void increment_stat(u32 stat_key) {
 	u64 *count = bpf_map_lookup_elem(&stats, &stat_key);
 	if (count)
 		__sync_fetch_and_add(count, 1);
+}
+
+static void increment_event_drop_stat(int ret) {
+	switch (ret) {
+	case -E2BIG:
+		increment_stat(STAT_EVENT_DROPS_MAP_FULL);
+		break;
+	case -EEXIST:
+	case -ENOENT:
+		increment_stat(STAT_EVENT_DROPS_INVALID_KEY);
+		break;
+	case -ENOMEM:
+		increment_stat(STAT_EVENT_DROPS_NOMEM);
+		break;
+	default:
+		increment_stat(STAT_EVENT_DROPS_OTHERS);
+		break;
+	}
+}
+
+static void increment_record_drop_stat(int ret) {
+	switch (ret) {
+	case -E2BIG:
+		increment_stat(STAT_RECORD_DROPS_MAP_FULL);
+		break;
+	case -EEXIST:
+	case -ENOENT:
+		increment_stat(STAT_RECORD_DROPS_INVALID_KEY);
+		break;
+	case -ENOMEM:
+		increment_stat(STAT_RECORD_DROPS_NOMEM);
+		break;
+	default:
+		increment_stat(STAT_RECORD_DROPS_OTHERS);
+		break;
+	}
 }
 
 // Uprobe to trace malloc calls
@@ -148,7 +196,7 @@ int BPF_KPROBE(uprobe_malloc, int size)
 	
 	int ret = bpf_map_update_elem(&event_heap, &tid, event, BPF_NOEXIST);
 	if (ret != 0) {
-		increment_stat(STAT_EVENT_DROPS);
+		increment_event_drop_stat(ret);
 	}
 
 	return 0;
@@ -180,7 +228,7 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 			int ret = bpf_map_update_elem(&malloc_event_records, &ptr, e,
 					    BPF_NOEXIST);
 			if (ret != 0) {
-				increment_stat(STAT_EVENT_DROPS);
+				increment_event_drop_stat(ret);
 			} else {
 				increment_stat(STAT_ACTIVE_EVENTS);
 			}
@@ -211,7 +259,7 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 							    &e->tid, new,
 							    BPF_ANY);
 					if (ret != 0) {
-						increment_stat(STAT_RECORD_DROPS);
+						increment_record_drop_stat(ret);
 					} else {
 						increment_stat(STAT_ACTIVE_RECORDS);
 					}
@@ -239,7 +287,7 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 			int ret = bpf_map_update_elem(&malloc_event_records, &ptr, e,
 					    BPF_NOEXIST);
 			if (ret != 0) {
-				increment_stat(STAT_EVENT_DROPS);
+				increment_event_drop_stat(ret);
 			}
 		}
 	}
