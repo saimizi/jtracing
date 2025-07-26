@@ -409,13 +409,6 @@ fn main() -> Result<(), JtraceError> {
 
     open_skel
         .maps_mut()
-        .event_heap()
-        .set_max_entries(cli.max_events)
-        .map_err(|_| Report::new(JtraceError::BPFError))
-        .attach_printable("Failed to set event_heap max_entries")?;
-
-    open_skel
-        .maps_mut()
         .malloc_records()
         .set_max_entries(cli.max_records)
         .map_err(|_| Report::new(JtraceError::BPFError))

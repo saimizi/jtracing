@@ -77,13 +77,6 @@ struct {
 	__type(value, struct malloc_event);
 } event_alloc_heap SEC(".maps");
 
-// Hash map to store malloc events
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 2048); // Will be configured from userspace
-	__type(key, u32);
-	__type(value, struct malloc_event);
-} event_heap SEC(".maps");
 
 // Hash map to store malloc records
 struct {
@@ -194,10 +187,7 @@ int BPF_KPROBE(uprobe_malloc, int size)
 		event->ustack_sz = -1;
 	}
 	
-	int ret = bpf_map_update_elem(&event_heap, &tid, event, BPF_NOEXIST);
-	if (ret != 0) {
-		increment_event_drop_stat(ret);
-	}
+	// Event data is now stored in per-CPU event_alloc_heap, no need to update
 
 	return 0;
 }
@@ -215,7 +205,8 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 	if (target_pid >= 0 && target_pid != pid)
 		return 0;
 
-	struct malloc_event *e = bpf_map_lookup_elem(&event_heap, &tid);
+	u32 zero = 0;
+	struct malloc_event *e = bpf_map_lookup_elem(&event_alloc_heap, &zero);
 	if (!e)
 		return 0;
 
@@ -292,8 +283,7 @@ int BPF_KRETPROBE(uretprobe_malloc, void *ptr)
 		}
 	}
 
-	// Delete the malloc event
-	bpf_map_delete_elem(&event_heap, &tid);
+	// No cleanup needed for per-CPU event_alloc_heap
 }
 
 // Uprobe to trace free calls
