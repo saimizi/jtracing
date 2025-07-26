@@ -297,31 +297,38 @@ fn print_statistics(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceEr
     }
 
     println!("  Malloc calls: {}", stats_totals[0]);
-    println!("  Free calls: {}", stats_totals[1]);
+    println!("  Calloc calls: {}", stats_totals[1]);
+    println!("  Realloc calls: {}", stats_totals[2]);
+    println!("  Aligned_alloc calls: {}", stats_totals[3]);
+    println!("  Free calls: {}", stats_totals[4]);
+
+    let total_alloc_calls = stats_totals[0] + stats_totals[1] + stats_totals[2] + stats_totals[3];
+    println!("  Total allocation calls: {}", total_alloc_calls);
 
     // Event drop statistics
-    let total_event_drops = stats_totals[2] + stats_totals[3] + stats_totals[4] + stats_totals[5];
+    let total_event_drops = stats_totals[5] + stats_totals[6] + stats_totals[7] + stats_totals[8];
     println!("  Event drops: {} (total)", total_event_drops);
     if total_event_drops > 0 {
-        println!("    - Map full: {}", stats_totals[2]);
-        println!("    - Invalid key: {}", stats_totals[3]);
-        println!("    - Out of memory: {}", stats_totals[4]);
-        println!("    - Other errors: {}", stats_totals[5]);
+        println!("    - Map full: {}", stats_totals[5]);
+        println!("    - Invalid key: {}", stats_totals[6]);
+        println!("    - Out of memory: {}", stats_totals[7]);
+        println!("    - Other errors: {}", stats_totals[8]);
     }
 
     // Record drop statistics
-    let total_record_drops = stats_totals[6] + stats_totals[7] + stats_totals[8] + stats_totals[9];
+    let total_record_drops =
+        stats_totals[9] + stats_totals[10] + stats_totals[11] + stats_totals[12];
     println!("  Record drops: {} (total)", total_record_drops);
     if total_record_drops > 0 {
-        println!("    - Map full: {}", stats_totals[6]);
-        println!("    - Invalid key: {}", stats_totals[7]);
-        println!("    - Out of memory: {}", stats_totals[8]);
-        println!("    - Other errors: {}", stats_totals[9]);
+        println!("    - Map full: {}", stats_totals[9]);
+        println!("    - Invalid key: {}", stats_totals[10]);
+        println!("    - Out of memory: {}", stats_totals[11]);
+        println!("    - Other errors: {}", stats_totals[12]);
     }
 
-    println!("  Symbol failures: {}", stats_totals[10]);
-    println!("  Active events: {}", stats_totals[11]);
-    println!("  Active records: {}", stats_totals[12]);
+    println!("  Symbol failures: {}", stats_totals[13]);
+    println!("  Active events: {}", stats_totals[14]);
+    println!("  Active records: {}", stats_totals[15]);
 
     // Calculate map utilization
     let malloc_records = maps.malloc_records();
