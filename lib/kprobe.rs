@@ -5,7 +5,7 @@ use {
     jlogger_tracing::{
         jdebug, jerror, jinfo, jtrace, jwarn, JloggerBuilder, LevelFilter, LogTimeFormat,
     },
-    once_cell::sync::Lazy,
+    once_cell::sync::{Lazy, OnceCell},
     rand::{thread_rng, Rng},
     std::{
         fmt::Display,
@@ -22,26 +22,20 @@ use {
 
 /// Gets the global tracing directory path, initializing it if needed.
 ///
-/// Uses atomic operations to safely initialize and share a static TracePath.
+/// Uses OnceCell to safely initialize and share a static TracePath.
 /// The path is derived from trace_top_dir() and cached for future calls.
 ///
 /// Returns:
 /// - Ok(&TracePath) on success
 /// - Err(JtraceError) if tracing directory can't be determined
 pub fn get_tracing_top() -> Result<&'static TracePath, JtraceError> {
-    static TRACING_PATH: AtomicPtr<TracePath> = AtomicPtr::new(std::ptr::null_mut());
+    static TRACING_PATH: OnceCell<TracePath> = OnceCell::new();
 
-    let mut tp = TRACING_PATH.load(Ordering::Acquire);
-
-    if tp.is_null() {
-        tp = Box::into_raw(Box::new(TracePath {
-            top: trace_top_dir()?.to_string(),
-        }));
-
-        TRACING_PATH.store(tp, Ordering::Release);
-    }
-
-    Ok(unsafe { &*tp })
+    TRACING_PATH.get_or_try_init(|| {
+        trace_top_dir().map(|top| TracePath {
+            top: top.to_string(),
+        })
+    })
 }
 
 /// Represents paths to key tracing subsystem files/directories.
