@@ -36,7 +36,7 @@ pub fn get_tracing_top() -> Result<&'static TracePath, JtraceError> {
 pub fn get_tracing_top() -> Result<&'static TracePath, JtraceError> {
     static TEST_PATH: OnceCell<TracePath> = OnceCell::new();
     Ok(TEST_PATH.get_or_init(|| TracePath {
-        top: "/mock/tracing".to_string()
+        top: "/mock/tracing".to_string(),
     }))
 }
 
@@ -48,7 +48,6 @@ mod tests {
 
     // Protect tests that might interact with tracing files
     static TRACING_LOCK: Mutex<()> = Mutex::new(());
-    static mut TRACING_PATH: OnceCell<TracePath> = OnceCell::new();
 
     fn setup_test_env() -> tempfile::TempDir {
         let dir = tempdir().unwrap();
@@ -192,10 +191,16 @@ mod tests {
 
         // Test enable/disable with our mock file
         kp.enable().unwrap();
-        assert_eq!(std::fs::read_to_string(&expected_enable_path).unwrap(), "1\n");
+        assert_eq!(
+            std::fs::read_to_string(&expected_enable_path).unwrap(),
+            "1\n"
+        );
 
         kp.disable().unwrap();
-        assert_eq!(std::fs::read_to_string(&expected_enable_path).unwrap(), "0\n");
+        assert_eq!(
+            std::fs::read_to_string(&expected_enable_path).unwrap(),
+            "0\n"
+        );
     }
 }
 
@@ -355,11 +360,7 @@ impl Kprobe {
     ///
     /// Writes "1" to the group's enable file.
     pub fn enable(&self) -> Result<(), JtraceError> {
-        let enable = format!(
-            "{}/events/kprobes/{}/enable",
-            self.tracing_top,
-            self.group
-        );
+        let enable = format!("{}/events/kprobes/{}/enable", self.tracing_top, self.group);
         writeln_str_file(&enable, "1", false)
     }
 
@@ -367,11 +368,7 @@ impl Kprobe {
     ///
     /// Writes "0" to the group's enable file.
     pub fn disable(&self) -> Result<(), JtraceError> {
-        let enable = format!(
-            "{}/events/kprobes/{}/enable",
-            self.tracing_top,
-            self.group
-        );
+        let enable = format!("{}/events/kprobes/{}/enable", self.tracing_top, self.group);
         writeln_str_file(&enable, "0", false)
     }
 
