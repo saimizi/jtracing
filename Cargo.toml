@@ -84,3 +84,4 @@ nix = "0.26.2"
 
 [dev-dependencies]
 tempfile = "3.10"
+libc = "0.2"  # Needed for some test mocks
