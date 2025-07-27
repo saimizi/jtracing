@@ -21,6 +21,11 @@ pub enum JtraceError {
     SymbolAnalyzerError,
     UnExpected,
     ParseFailed { line: String, position: usize },
+    // New symbol analyzer specific errors
+    PermissionDenied { path: String },
+    InvalidDebugLink { file: String, debug_file: String },
+    SymbolCacheError { operation: String },
+    AddressOutOfRange { addr: u64, max_size: usize },
 }
 
 impl Display for JtraceError {
@@ -40,5 +45,9 @@ pub fn error_desc(error: &JtraceError) -> (i32, &'static str) {
         JtraceError::SymbolAnalyzerError => (-4, "SymbolAnalyzer error"),
         JtraceError::UnExpected => (-5, "UnExpected error"),
         JtraceError::ParseFailed { .. } => (-6, "Parse failed"),
+        JtraceError::PermissionDenied { .. } => (-7, "Permission denied"),
+        JtraceError::InvalidDebugLink { .. } => (-8, "Invalid debug link"),
+        JtraceError::SymbolCacheError { .. } => (-9, "Symbol cache error"),
+        JtraceError::AddressOutOfRange { .. } => (-10, "Address out of range"),
     }
 }
