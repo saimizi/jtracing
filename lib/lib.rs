@@ -31,42 +31,29 @@ pub use symbolanalyzer::SymbolAnalyzer;
 pub use tracelog::TraceLog;
 
 pub fn writeln_proc(f: &str, s: &str, append: bool) -> Result<(), JtraceError> {
-    unsafe {
-        let c_file = CString::new(f).map_err(|_| Report::new(JtraceError::InvalidData))?;
-        let mut mode = CString::new("w").unwrap();
-        if append {
-            mode = CString::new("a").unwrap();
-        }
-        let fp = libc::fopen(c_file.as_ptr(), mode.as_ptr());
+    use std::fs::OpenOptions;
+    use std::io::Write;
 
-        if fp.is_null() {
-            return Err(Report::new(JtraceError::IOError)).attach_printable(format!(
-                "Failed to open {} to write {} ({})",
-                f,
-                s,
-                std::io::Error::last_os_error()
-            ));
-        }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .append(append)
+        .truncate(!append) // Only truncate if not in append mode
+        .open(f)
+        .map_err(|e| {
+            Report::new(JtraceError::IOError)
+                .attach_printable(format!("Failed to open {}: {}", f, e))
+        })?;
 
-        let c_buf = CString::new(s).map_err(|_| Report::new(JtraceError::InvalidData))?;
-        let ret = libc::fwrite(
-            c_buf.as_ptr() as *const libc::c_void,
-            c_buf.as_bytes().len(),
-            1,
-            fp,
-        ) as i32;
+    file.write_all(s.as_bytes()).map_err(|e| {
+        Report::new(JtraceError::IOError)
+            .attach_printable(format!("Failed to write to {}: {}", f, e))
+    })?;
 
-        // Ensure file is closed even if write fails
-        libc::fclose(fp);
+    file.flush().map_err(|e| {
+        Report::new(JtraceError::IOError).attach_printable(format!("Failed to flush {}: {}", f, e))
+    })?;
 
-        if ret < 0 {
-            return Err(Report::new(JtraceError::IOError)).attach_printable(format!(
-                "Failed to write {} ({})",
-                f,
-                std::io::Error::last_os_error()
-            ));
-        }
-    }
     Ok(())
 }
 
@@ -296,6 +283,46 @@ mod tests {
             .read_to_string(&mut content)
             .unwrap();
         assert_eq!(content, "test content appended");
+
+        // Test creating new file
+        let new_path = format!("{}.new", path);
+        writeln_proc(&new_path, "new file", false).unwrap();
+        assert!(Path::new(&new_path).exists());
+
+        // Test empty string
+        writeln_proc(path, "", true).unwrap();
+        content.clear();
+        File::open(path)
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+        assert_eq!(content, "test content appended");
+
+        // Test non-ASCII but valid UTF-8 content
+        let s = "こんにちは"; // "Hello" in Japanese
+        writeln_proc(path, s, false).unwrap();
+
+        // Verify the content was written correctly
+        content.clear();
+        File::open(path)
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+        assert_eq!(content, "こんにちは");
+
+        // Test error cases
+        // Invalid path (directory)
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_str().unwrap();
+        assert!(writeln_proc(dir_path, "test", false).is_err());
+
+        // Read-only file
+        let ro_file = tempfile::NamedTempFile::new().unwrap();
+        let ro_path = ro_file.path();
+        let mut perms = fs::metadata(ro_path).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(ro_path, perms).unwrap();
+        assert!(writeln_proc(ro_path.to_str().unwrap(), "test", false).is_err());
     }
 
     #[test]
