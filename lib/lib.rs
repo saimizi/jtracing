@@ -30,26 +30,50 @@ pub use symbolanalyzer::NmSymbolType;
 pub use symbolanalyzer::SymbolAnalyzer;
 pub use tracelog::TraceLog;
 
+/// Writes a string to a file in `/proc` or similar system directory with control over append/truncate behavior.
+///
+/// This function:
+/// 1. Opens the file with write permissions, creating it if it doesn't exist
+/// 2. Controls whether to append or truncate based on the `append` parameter
+/// 3. Writes the string contents exactly as provided (does not add newlines)
+/// 4. Ensures the write is flushed to disk
+///
+/// Parameters:
+/// - `f`: Path to the file (typically in /proc or /sys)
+/// - `s`: String content to write
+/// - `append`: If true, appends to existing content. If false, truncates file first.
+///
+/// Returns:
+/// - Ok(()) on success
+/// - Err(JtraceError::IOError) if any file operation fails
+///
+/// Notes:
+/// - Unlike `writeln_str_file`, this does NOT automatically add newlines
+/// - Creates the file if it doesn't exist
+/// - Useful for writing to pseudo-files in /proc and /sys
 pub fn writeln_proc(f: &str, s: &str, append: bool) -> Result<(), JtraceError> {
     use std::fs::OpenOptions;
     use std::io::Write;
 
+    // Open file with options based on append mode
     let mut file = OpenOptions::new()
         .write(true)
-        .create(true)
-        .append(append)
-        .truncate(!append) // Only truncate if not in append mode
+        .create(true) // Create file if it doesn't exist
+        .append(append) // Append if requested
+        .truncate(!append) // Truncate only if not in append mode
         .open(f)
         .map_err(|e| {
             Report::new(JtraceError::IOError)
                 .attach_printable(format!("Failed to open {}: {}", f, e))
         })?;
 
+    // Write the raw string bytes (no automatic newline)
     file.write_all(s.as_bytes()).map_err(|e| {
         Report::new(JtraceError::IOError)
             .attach_printable(format!("Failed to write to {}: {}", f, e))
     })?;
 
+    // Ensure data is flushed to disk
     file.flush().map_err(|e| {
         Report::new(JtraceError::IOError).attach_printable(format!("Failed to flush {}: {}", f, e))
     })?;
@@ -57,6 +81,22 @@ pub fn writeln_proc(f: &str, s: &str, append: bool) -> Result<(), JtraceError> {
     Ok(())
 }
 
+/// Writes a string to a file with automatic newline handling.
+///
+/// This function:
+/// 1. Verifies the file exists
+/// 2. Automatically appends a newline if the string doesn't end with one
+/// 3. Writes the content with proper error handling
+///
+/// Parameters:
+/// - `f`: Path to the file
+/// - `s`: String content to write
+/// - `append`: If true, appends to existing content. If false, truncates file first.
+///
+/// Returns:
+/// - Ok(()) on success
+/// - Err(JtraceError::InvalidData) if file doesn't exist
+/// - Err(JtraceError::IOError) on any I/O error
 pub fn writeln_str_file(f: &str, s: &str, append: bool) -> Result<(), JtraceError> {
     let fp = Path::new(f);
 
@@ -96,13 +136,29 @@ pub fn writeln_str_file(f: &str, s: &str, append: bool) -> Result<(), JtraceErro
     Ok(())
 }
 
+/// Finds and caches the path to the kernel tracing directory.
+///
+/// This function:
+/// 1. Locates the debugfs mount point by reading /proc/mounts
+/// 2. Appends "/tracing" to get the full tracing directory path
+/// 3. Caches the result in a static OnceLock for future calls
+///
+/// Typical return values:
+/// - On success: "/sys/kernel/debug/tracing" (path may vary)
+/// - On error: Returns JtraceError::InvalidData if debugfs not mounted
+///             or JtraceError::IOError if /proc/mounts can't be read
+///
+/// The result is cached after first successful call for performance.
+/// Subsequent calls will return the cached path without filesystem access.
 pub fn trace_top_dir() -> Result<&'static str, JtraceError> {
     static TRACING_TOP: OnceLock<String> = OnceLock::new();
 
+    // Return cached value if available
     if let Some(s) = TRACING_TOP.get() {
         return Ok(s);
     }
 
+    // Read /proc/mounts to find debugfs mount point
     let file = fs::OpenOptions::new()
         .read(true)
         .open(Path::new("/proc/mounts"))
@@ -112,25 +168,40 @@ pub fn trace_top_dir() -> Result<&'static str, JtraceError> {
     while let Some(Ok(l)) = lines.next() {
         let entries: Vec<&str> = l.split(' ').collect();
 
+        // Skip non-debugfs entries
         if entries[0] != "debugfs" {
             continue;
         }
 
+        // Found debugfs mount - build tracing path
         let mut trace_top = String::from(entries[1]);
         trace_top.push_str("/tracing");
 
-        // Safe because we're the only ones initializing this
+        // Store in OnceLock (safe because we're the only initializer)
         unsafe {
             TRACING_TOP.set(trace_top).unwrap_unchecked();
         }
         break;
     }
 
+    // Return cached value or error if debugfs not found
     TRACING_TOP.get().map(|s| s.as_str()).ok_or_else(|| {
         Report::new(JtraceError::InvalidData).attach_printable("debugfs mount point not found")
     })
 }
 
+/// Discovers and caches all available kernel tracepoints.
+///
+/// Scans the tracing events directory to find all tracepoints in format "category:name".
+/// The results are cached after first discovery for performance.
+///
+/// Returns:
+/// - Ok(&str) with newline-separated list of tracepoints on success
+/// - Err(JtraceError::IOError) if events directory can't be read
+/// - Err(JtraceError::InvalidData) if no tracepoints found
+///
+/// Example return value:
+/// "sched:sched_switch\nsched:sched_wakeup\n..."
 pub fn tracepoints() -> Result<&'static str, JtraceError> {
     static TRACEPOINTS: AtomicPtr<String> = AtomicPtr::<String>::new(std::ptr::null_mut());
 
@@ -183,6 +254,12 @@ pub fn tracepoints() -> Result<&'static str, JtraceError> {
     }
 }
 
+/// Increases the memlock resource limit to maximum.
+///
+/// This is typically needed for BPF programs that lock memory for maps.
+/// Uses RLIM_INFINITY for both current and max limits.
+///
+/// Safety: Uses unsafe libc calls but is safe as it doesn't violate memory safety.
 pub fn bump_memlock_rlimit() {
     unsafe {
         let limit = libc::rlimit {
@@ -212,6 +289,16 @@ pub unsafe fn bytes_to_string(b: *const i8) -> String {
         .unwrap_or_else(|_| String::from("(invalid)"))
 }
 
+/// Converts a thread ID (TID) to its parent process ID (PID).
+///
+/// Reads /proc/[tid]/status to find the Tgid field which represents the PID.
+///
+/// Parameters:
+/// - `tid`: Thread ID to look up
+///
+/// Returns:
+/// - Some(pid) if status file exists and contains Tgid
+/// - None if thread doesn't exist or status can't be read
 pub fn tid_to_pid(tid: i32) -> Option<i32> {
     use std::fs;
     use std::io::{self, BufRead};
