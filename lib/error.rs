@@ -20,6 +20,7 @@ pub enum JtraceError {
     BPFError,
     SymbolAnalyzerError,
     UnExpected,
+    ParseFailed { line: String, position: usize },
 }
 
 impl Display for JtraceError {
@@ -38,5 +39,6 @@ pub fn error_desc(error: &JtraceError) -> (i32, &'static str) {
         JtraceError::BPFError => (-3, "BPF error"),
         JtraceError::SymbolAnalyzerError => (-4, "SymbolAnalyzer error"),
         JtraceError::UnExpected => (-5, "UnExpected error"),
+        JtraceError::ParseFailed { .. } => (-6, "Parse failed"),
     }
 }
