@@ -8,7 +8,10 @@ use {
         fs::{self, File},
         io::{BufRead, BufReader, BufWriter, Write},
         path::{Path, PathBuf},
-        sync::atomic::{AtomicPtr, Ordering},
+        sync::{
+            atomic::{AtomicPtr, Ordering},
+            OnceLock,
+        },
     },
 };
 
@@ -104,36 +107,38 @@ pub fn writeln_str_file(f: &str, s: &str, append: bool) -> Result<(), JtraceErro
 }
 
 pub fn trace_top_dir() -> Result<&'static str, JtraceError> {
-    static TRACING_TOP: AtomicPtr<String> = AtomicPtr::<String>::new(std::ptr::null_mut());
+    static TRACING_TOP: OnceLock<String> = OnceLock::new();
 
-    let mut top = TRACING_TOP.load(Ordering::Acquire);
-    if top.is_null() {
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .open(Path::new("/proc/mounts"))
-            .map_err(|_| Report::new(JtraceError::IOError))?;
-        let mut lines = BufReader::new(file).lines();
+    if let Some(s) = TRACING_TOP.get() {
+        return Ok(s);
+    }
 
-        while let Some(Ok(l)) = lines.next() {
-            let entries: Vec<&str> = l.split(' ').collect();
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .open(Path::new("/proc/mounts"))
+        .map_err(|_| Report::new(JtraceError::IOError))?;
+    let mut lines = BufReader::new(file).lines();
 
-            if entries[0] != "debugfs" {
-                continue;
-            }
+    while let Some(Ok(l)) = lines.next() {
+        let entries: Vec<&str> = l.split(' ').collect();
 
-            let mut trace_top = String::from(entries[1]);
-            trace_top.push_str("/tracing");
-            top = Box::into_raw(Box::new(trace_top));
-            TRACING_TOP.store(top, Ordering::Release);
-            break;
+        if entries[0] != "debugfs" {
+            continue;
         }
+
+        let mut trace_top = String::from(entries[1]);
+        trace_top.push_str("/tracing");
+
+        // Safe because we're the only ones initializing this
+        unsafe {
+            TRACING_TOP.set(trace_top).unwrap_unchecked();
+        }
+        break;
     }
 
-    if top.is_null() {
-        Err(Report::new(JtraceError::InvalidData)).attach_printable("trace top directory not found")
-    } else {
-        Ok(unsafe { &*top })
-    }
+    TRACING_TOP.get().map(|s| s.as_str()).ok_or_else(|| {
+        Report::new(JtraceError::InvalidData).attach_printable("debugfs mount point not found")
+    })
 }
 
 pub fn tracepoints() -> Result<&'static str, JtraceError> {
@@ -199,19 +204,22 @@ pub fn bump_memlock_rlimit() {
     }
 }
 
-/// # Safety
+/// Safely converts a C string pointer to a Rust String
 ///
-/// This function might dereference a raw pointer.
+/// # Safety
+/// The pointer must be valid and point to a null-terminated C string
 pub unsafe fn bytes_to_string(b: *const i8) -> String {
-    let ret = String::from("INVALID");
+    if b.is_null() {
+        return String::from("(null)");
+    }
 
     #[cfg(target_arch = "aarch64")]
-    let b = std::mem::transmute(b);
+    let b = std::mem::transmute::<*const i8, *const i8>(b);
 
-    if let Ok(s) = CStr::from_ptr(b).to_str() {
-        return s.to_owned();
-    }
-    ret
+    CStr::from_ptr(b)
+        .to_str()
+        .map(|s| s.to_owned())
+        .unwrap_or_else(|_| String::from("(invalid)"))
 }
 
 pub fn tid_to_pid(tid: i32) -> Option<i32> {
@@ -231,4 +239,25 @@ pub fn tid_to_pid(tid: i32) -> Option<i32> {
         }
     }
     None
+}
+/// Safely converts a C string pointer to a Rust String with error reporting
+///
+/// # Safety
+/// The pointer must be valid and point to a null-terminated C string
+pub unsafe fn bytes_to_string_with_error(b: *const i8) -> Result<String, JtraceError> {
+    if b.is_null() {
+        return Err(Report::new(JtraceError::InvalidData))
+            .attach_printable("Null pointer passed to bytes_to_string");
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    let b = std::mem::transmute::<*const i8, *const i8>(b);
+
+    CStr::from_ptr(b)
+        .to_str()
+        .map(|s| s.to_owned())
+        .map_err(|_| {
+            Report::new(JtraceError::InvalidData)
+                .attach_printable("Failed to convert C string to UTF-8")
+        })
 }
