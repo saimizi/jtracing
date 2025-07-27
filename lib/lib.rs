@@ -275,12 +275,12 @@ pub fn bump_memlock_rlimit() {
 ///
 /// # Safety
 /// The pointer must be valid and point to a null-terminated C string
-pub unsafe fn bytes_to_string(b: *const libc::c_char) -> String {
+pub unsafe fn bytes_to_string(b: *const i8) -> String {
     if b.is_null() {
         return String::from("(null)");
     }
 
-    CStr::from_ptr(b)
+    CStr::from_ptr(b as *const libc::c_char)
         .to_str()
         .map(|s| s.to_owned())
         .unwrap_or_else(|_| String::from("(invalid)"))
@@ -318,13 +318,13 @@ pub fn tid_to_pid(tid: i32) -> Option<i32> {
 ///
 /// # Safety
 /// The pointer must be valid and point to a null-terminated C string
-pub unsafe fn bytes_to_string_with_error(b: *const libc::c_char) -> Result<String, JtraceError> {
+pub unsafe fn bytes_to_string_with_error(b: *const i8) -> Result<String, JtraceError> {
     if b.is_null() {
         return Err(Report::new(JtraceError::InvalidData))
             .attach_printable("Null pointer passed to bytes_to_string");
     }
 
-    CStr::from_ptr(b)
+    CStr::from_ptr(b as *const libc::c_char)
         .to_str()
         .map(|s| s.to_owned())
         .map_err(|_| {
