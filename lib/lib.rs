@@ -436,7 +436,7 @@ mod tests {
     fn test_bytes_to_string() {
         // Test valid C string
         let c_str = CString::new("test string").unwrap();
-        let result = unsafe { bytes_to_string(c_str.as_ptr()) };
+        let result = unsafe { bytes_to_string(c_str.as_ptr() as *const i8) };
         assert_eq!(result, "test string");
 
         // Test null pointer
@@ -447,7 +447,7 @@ mod tests {
     fn test_bytes_to_string_with_error() {
         // Test valid C string
         let c_str = CString::new("test string").unwrap();
-        let result = unsafe { bytes_to_string_with_error(c_str.as_ptr()) }.unwrap();
+        let result = unsafe { bytes_to_string_with_error(c_str.as_ptr() as *const i8) }.unwrap();
         assert_eq!(result, "test string");
 
         // Test null pointer error
