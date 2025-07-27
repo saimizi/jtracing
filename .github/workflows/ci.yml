@@ -7,7 +7,16 @@ on:
 
 jobs:
   build-test-format:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-latest-arm64
+    
+    runs-on: ${{ matrix.runner }}
+    name: Build and Test (${{ matrix.arch }})
 
     steps:
     - uses: actions/checkout@v4
