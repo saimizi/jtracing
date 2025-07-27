@@ -197,7 +197,8 @@ fn main() -> Result<(), JtraceError> {
         plain::copy_from_bytes(&mut event, data).expect("Corrupted event data");
 
         let now = chrono::Local::now();
-        let timestamp_us = (now.timestamp_nanos() - start.timestamp_nanos()) / 1000;
+        let timestamp_us =
+            (now.timestamp_nanos_opt().unwrap() - start.timestamp_nanos_opt().unwrap()) / 1000;
 
         let signals = "HUP INT QUIT ILL TRAP ABRT BUS FPE KILL USR1 SEGV USR2 PIPE ALRM TERM STKFLT CHLD CONT STOP TSTP TTIN TTOU URG XCPU XFSZ VTALRM PROF WINCH POLL PWR SYS"
             .split(' ').collect::<Vec<&str>>();
