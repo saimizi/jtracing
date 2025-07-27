@@ -21,21 +21,182 @@ use {
 };
 
 /// Gets the global tracing directory path, initializing it if needed.
-///
-/// Uses OnceCell to safely initialize and share a static TracePath.
-/// The path is derived from trace_top_dir() and cached for future calls.
-///
-/// Returns:
-/// - Ok(&TracePath) on success
-/// - Err(JtraceError) if tracing directory can't be determined
+#[cfg(not(test))]
 pub fn get_tracing_top() -> Result<&'static TracePath, JtraceError> {
     static TRACING_PATH: OnceCell<TracePath> = OnceCell::new();
-
     TRACING_PATH.get_or_try_init(|| {
         trace_top_dir().map(|top| TracePath {
             top: top.to_string(),
         })
     })
+}
+
+/// Test version that uses a mock path
+#[cfg(test)]
+pub fn get_tracing_top() -> Result<&'static TracePath, JtraceError> {
+    static TEST_PATH: OnceCell<TracePath> = OnceCell::new();
+    Ok(TEST_PATH.get_or_init(|| TracePath {
+        top: "/mock/tracing".to_string()
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    use tempfile::tempdir;
+
+    // Protect tests that might interact with tracing files
+    static TRACING_LOCK: Mutex<()> = Mutex::new(());
+    static mut TRACING_PATH: OnceCell<TracePath> = OnceCell::new();
+
+    fn setup_test_env() -> tempfile::TempDir {
+        let dir = tempdir().unwrap();
+        // Create required directory structure
+        std::fs::create_dir_all(dir.path().join("events/kprobes")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_tracepath_construction() {
+        let tp = TracePath {
+            top: "/test/path".to_string(),
+        };
+
+        assert_eq!(tp.tracing_top(), "/test/path");
+        assert_eq!(tp.kprobe_enable(), "/test/path/events/kprobes/enable");
+        assert_eq!(tp.kprobe_events(), "/test/path/kprobe_events");
+        assert_eq!(tp.tracing_on(), "/test/path/tracing_on");
+    }
+
+    #[test]
+    fn test_get_tracing_top() {
+        let result = get_tracing_top();
+        assert!(result.is_ok(), "Should get mock tracing top directory");
+        assert_eq!(result.unwrap().tracing_top(), "/mock/tracing");
+    }
+
+    #[tokio::test]
+    async fn test_kprobe_creation() {
+        let _guard = TRACING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = setup_test_env();
+
+        // Override tracing path for this test
+        let test_path = OnceCell::new();
+        test_path
+            .set(TracePath {
+                top: dir.path().to_str().unwrap().to_string(),
+            })
+            .unwrap();
+
+        // Test with auto-generated group name
+        let kp = Kprobe {
+            group: "probe123_test".to_string(),
+            fname: "test_function".to_string(),
+            tracing_top: test_path.get().unwrap().tracing_top().to_string(),
+            args: Vec::new(),
+        };
+        assert!(kp.group().starts_with("probe"));
+        assert_eq!(kp.fname, "test_function");
+
+        // Test with custom group name
+        let kp = Kprobe {
+            group: "my_group".to_string(),
+            fname: "test_function".to_string(),
+            tracing_top: test_path.get().unwrap().tracing_top().to_string(),
+            args: Vec::new(),
+        };
+        assert_eq!(kp.group(), "my_group");
+    }
+
+    #[tokio::test]
+    async fn test_kprobe_args() {
+        let _guard = TRACING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = setup_test_env();
+
+        // Override tracing path for this test
+        let test_path = OnceCell::new();
+        test_path
+            .set(TracePath {
+                top: dir.path().to_str().unwrap().to_string(),
+            })
+            .unwrap();
+
+        let mut kp = Kprobe {
+            group: "test_group".to_string(),
+            fname: "test_function".to_string(),
+            tracing_top: test_path.get().unwrap().tracing_top().to_string(),
+            args: Vec::new(),
+        };
+
+        kp.add_arg("+0(%di):u32");
+        kp.add_arg("+8(%si):u64");
+
+        assert_eq!(kp.args.len(), 2);
+        assert_eq!(kp.args[0], "+0(%di):u32");
+        assert_eq!(kp.args[1], "+8(%si):u64");
+    }
+
+    #[tokio::test]
+    async fn test_kprobe_build_failure() {
+        let _guard = TRACING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = setup_test_env();
+        let fake_path = dir.path().to_str().unwrap().to_string();
+
+        // Create test Kprobe with mock paths
+        let kp = Kprobe {
+            group: "test_group".to_string(),
+            fname: "test_function".to_string(),
+            tracing_top: fake_path.clone(),
+            args: vec!["+0(%di):u32".to_string()],
+        };
+
+        // Should fail since we didn't create the mock kprobe_events file
+        let result = kp.build().await;
+        assert!(
+            result.is_err(),
+            "build() should fail when kprobe_events doesn't exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_kprobe_enable_disable() {
+        let _guard = TRACING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = setup_test_env();
+        let fake_path = dir.path().to_str().unwrap().to_string();
+
+        // Create unique group name for this test to avoid conflicts
+        let group = format!("test_group_{}", rand::random::<u32>());
+
+        // Create full mock directory structure
+        let group_dir = dir.path().join(format!("events/kprobes/{}", group));
+        std::fs::create_dir_all(&group_dir).unwrap();
+        let enable_path = group_dir.join("enable");
+        std::fs::write(&enable_path, "0").unwrap();
+
+        // Create test Kprobe with mock paths
+        let kp = Kprobe {
+            group: group.clone(),
+            fname: "test_function".to_string(),
+            tracing_top: fake_path.clone(),
+            args: Vec::new(),
+        };
+
+        // Create mock enable file at the expected path
+        let expected_enable_path = Path::new(&kp.tracing_top)
+            .join("events/kprobes")
+            .join(&kp.group)
+            .join("enable");
+        std::fs::create_dir_all(expected_enable_path.parent().unwrap()).unwrap();
+        std::fs::write(&expected_enable_path, "0").unwrap();
+
+        // Test enable/disable with our mock file
+        kp.enable().unwrap();
+        assert_eq!(std::fs::read_to_string(&expected_enable_path).unwrap(), "1\n");
+
+        kp.disable().unwrap();
+        assert_eq!(std::fs::read_to_string(&expected_enable_path).unwrap(), "0\n");
+    }
 }
 
 /// Represents paths to key tracing subsystem files/directories.
@@ -135,25 +296,34 @@ impl Kprobe {
     /// - Err(JtraceError::InvalidData) if probe already exists
     /// - Err(JtraceError::IOError) on write failure
     pub async fn build(&self) -> Result<(), JtraceError> {
-        let mut kprobe = format!("p:{} {}", self.group, self.fname);
-
-        for arg in &self.args {
-            let s = format!(" {}", arg);
-            kprobe.push_str(&s);
-        }
-
         let kprobe_events = format!("{}/kprobe_events", self.tracing_top);
-        if let Ok(probes) = fs::read_to_string(&kprobe_events).await {
-            let entry = format!("p:{}/{} {}", self.group, self.fname, self.fname);
 
-            if probes.contains(&entry) {
-                return Err(Report::new(JtraceError::InvalidData))
-                    .attach_printable(format!("{} kprobe already added", self.group));
-            }
-
-            writeln_str_file(&kprobe_events, &kprobe, true)?;
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        // First verify the kprobe_events file exists and is accessible
+        if !Path::new(&kprobe_events).exists() {
+            return Err(Report::new(JtraceError::IOError))
+                .attach_printable("kprobe_events file does not exist");
         }
+
+        // Then check for existing probes
+        let probes = fs::read_to_string(&kprobe_events).await.map_err(|e| {
+            Report::new(JtraceError::IOError)
+                .attach_printable(format!("Failed to read kprobe_events: {}", e))
+        })?;
+
+        let entry = format!("p:{}/{} {}", self.group, self.fname, self.fname);
+        if probes.contains(&entry) {
+            return Err(Report::new(JtraceError::InvalidData))
+                .attach_printable(format!("{} kprobe already added", self.group));
+        }
+
+        // Build and write the probe definition
+        let mut kprobe = format!("p:{} {}", self.group, self.fname);
+        for arg in &self.args {
+            kprobe.push_str(&format!(" {}", arg));
+        }
+
+        writeln_str_file(&kprobe_events, &kprobe, true)?;
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
         Ok(())
     }
@@ -187,7 +357,7 @@ impl Kprobe {
     pub fn enable(&self) -> Result<(), JtraceError> {
         let enable = format!(
             "{}/events/kprobes/{}/enable",
-            get_tracing_top()?.tracing_top(),
+            self.tracing_top,
             self.group
         );
         writeln_str_file(&enable, "1", false)
@@ -199,7 +369,7 @@ impl Kprobe {
     pub fn disable(&self) -> Result<(), JtraceError> {
         let enable = format!(
             "{}/events/kprobes/{}/enable",
-            get_tracing_top()?.tracing_top(),
+            self.tracing_top,
             self.group
         );
         writeln_str_file(&enable, "0", false)
