@@ -280,10 +280,7 @@ pub unsafe fn bytes_to_string(b: *const i8) -> String {
         return String::from("(null)");
     }
 
-    #[cfg(target_arch = "aarch64")]
-    let b = std::mem::transmute::<*const i8, *const i8>(b);
-
-    CStr::from_ptr(b)
+    CStr::from_ptr(b as *const libc::c_char)
         .to_str()
         .map(|s| s.to_owned())
         .unwrap_or_else(|_| String::from("(invalid)"))
@@ -327,10 +324,7 @@ pub unsafe fn bytes_to_string_with_error(b: *const i8) -> Result<String, JtraceE
             .attach_printable("Null pointer passed to bytes_to_string");
     }
 
-    #[cfg(target_arch = "aarch64")]
-    let b = std::mem::transmute::<*const i8, *const i8>(b);
-
-    CStr::from_ptr(b)
+    CStr::from_ptr(b as *const libc::c_char)
         .to_str()
         .map(|s| s.to_owned())
         .map_err(|_| {
