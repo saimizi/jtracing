@@ -6,8 +6,17 @@ on:
       - main
 
 jobs:
-  build-test-format:
-    runs-on: ubuntu-latest
+  test:
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    
+    runs-on: ${{ matrix.runner }}
+    name: Build and Test (${{ matrix.arch }})
 
     steps:
     - uses: actions/checkout@v4
@@ -29,3 +38,11 @@ jobs:
 
     - name: Check format
       run: cargo fmt -- --check
+
+  build-test-format:
+    needs: test
+    runs-on: ubuntu-latest
+    name: Build and Test Status
+    steps:
+      - name: Report success
+        run: echo "All build and test jobs completed successfully"

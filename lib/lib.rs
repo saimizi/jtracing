@@ -280,10 +280,7 @@ pub unsafe fn bytes_to_string(b: *const i8) -> String {
         return String::from("(null)");
     }
 
-    #[cfg(target_arch = "aarch64")]
-    let b = std::mem::transmute::<*const i8, *const i8>(b);
-
-    CStr::from_ptr(b)
+    CStr::from_ptr(b as *const libc::c_char)
         .to_str()
         .map(|s| s.to_owned())
         .unwrap_or_else(|_| String::from("(invalid)"))
@@ -327,10 +324,7 @@ pub unsafe fn bytes_to_string_with_error(b: *const i8) -> Result<String, JtraceE
             .attach_printable("Null pointer passed to bytes_to_string");
     }
 
-    #[cfg(target_arch = "aarch64")]
-    let b = std::mem::transmute::<*const i8, *const i8>(b);
-
-    CStr::from_ptr(b)
+    CStr::from_ptr(b as *const libc::c_char)
         .to_str()
         .map(|s| s.to_owned())
         .map_err(|_| {
@@ -442,7 +436,7 @@ mod tests {
     fn test_bytes_to_string() {
         // Test valid C string
         let c_str = CString::new("test string").unwrap();
-        let result = unsafe { bytes_to_string(c_str.as_ptr()) };
+        let result = unsafe { bytes_to_string(c_str.as_ptr() as *const i8) };
         assert_eq!(result, "test string");
 
         // Test null pointer
@@ -453,7 +447,7 @@ mod tests {
     fn test_bytes_to_string_with_error() {
         // Test valid C string
         let c_str = CString::new("test string").unwrap();
-        let result = unsafe { bytes_to_string_with_error(c_str.as_ptr()) }.unwrap();
+        let result = unsafe { bytes_to_string_with_error(c_str.as_ptr() as *const i8) }.unwrap();
         assert_eq!(result, "test string");
 
         // Test null pointer error
