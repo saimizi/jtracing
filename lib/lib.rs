@@ -56,6 +56,9 @@ pub fn writeln_proc(f: &str, s: &str, append: bool) -> Result<(), JtraceError> {
             fp,
         ) as i32;
 
+        // Ensure file is closed even if write fails
+        libc::fclose(fp);
+
         if ret < 0 {
             return Err(Report::new(JtraceError::IOError)).attach_printable(format!(
                 "Failed to write {} ({})",
@@ -260,4 +263,102 @@ pub unsafe fn bytes_to_string_with_error(b: *const i8) -> Result<String, JtraceE
             Report::new(JtraceError::InvalidData)
                 .attach_printable("Failed to convert C string to UTF-8")
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+    use std::ffi::CString;
+    use std::io::Read;
+
+    #[test]
+    fn test_writeln_proc() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path().to_str().unwrap();
+
+        // Test writing to file
+        writeln_proc(path, "test content", false).unwrap();
+        
+        // Verify content
+        let mut content = String::new();
+        File::open(path).unwrap().read_to_string(&mut content).unwrap();
+        assert_eq!(content, "test content");
+
+        // Test append mode
+        writeln_proc(path, " appended", true).unwrap();
+        content.clear();
+        File::open(path).unwrap().read_to_string(&mut content).unwrap();
+        assert_eq!(content, "test content appended");
+    }
+
+    #[test]
+    fn test_writeln_str_file() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path().to_str().unwrap();
+
+        // Test writing with newline handling
+        writeln_str_file(path, "test line", false).unwrap();
+        
+        // Verify content has newline
+        let mut content = String::new();
+        File::open(path).unwrap().read_to_string(&mut content).unwrap();
+        assert_eq!(content, "test line\n");
+
+        // Test empty string case
+        writeln_str_file(path, "", true).unwrap();
+        content.clear();
+        File::open(path).unwrap().read_to_string(&mut content).unwrap();
+        assert_eq!(content, "test line\n\n");
+    }
+
+    #[test]
+    fn test_bytes_to_string() {
+        // Test valid C string
+        let c_str = CString::new("test string").unwrap();
+        let result = unsafe { bytes_to_string(c_str.as_ptr()) };
+        assert_eq!(result, "test string");
+
+        // Test null pointer
+        assert_eq!(unsafe { bytes_to_string(std::ptr::null()) }, "(null)");
+    }
+
+    #[test]
+    fn test_bytes_to_string_with_error() {
+        // Test valid C string
+        let c_str = CString::new("test string").unwrap();
+        let result = unsafe { bytes_to_string_with_error(c_str.as_ptr()) }.unwrap();
+        assert_eq!(result, "test string");
+
+        // Test null pointer error
+        let err = unsafe { bytes_to_string_with_error(std::ptr::null()) }.unwrap_err();
+        assert!(matches!(err.current_context(), JtraceError::InvalidData));
+    }
+
+    #[test]
+    fn test_tid_to_pid() {
+        // Test with current process ID (should return same value)
+        let tid = std::process::id() as i32;
+        let pid = tid_to_pid(tid).unwrap();
+        assert_eq!(pid, tid);
+
+        // Test invalid thread ID
+        assert!(tid_to_pid(-1).is_none());
+    }
+
+    #[test]
+    fn test_trace_top_dir() {
+        // Skip test if debugfs isn't mounted
+        if fs::metadata("/sys/kernel/debug").is_err() {
+            return;
+        }
+
+        // Should find debugfs mount point
+        let path = trace_top_dir().unwrap();
+        assert!(path.ends_with("/tracing"));
+
+        // Should be cached on subsequent calls
+        let path2 = trace_top_dir().unwrap();
+        assert_eq!(path, path2);
+    }
 }
