@@ -268,9 +268,9 @@ pub unsafe fn bytes_to_string_with_error(b: *const i8) -> Result<String, JtraceE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
     use std::ffi::CString;
     use std::io::Read;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_writeln_proc() {
@@ -279,16 +279,22 @@ mod tests {
 
         // Test writing to file
         writeln_proc(path, "test content", false).unwrap();
-        
+
         // Verify content
         let mut content = String::new();
-        File::open(path).unwrap().read_to_string(&mut content).unwrap();
+        File::open(path)
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
         assert_eq!(content, "test content");
 
         // Test append mode
         writeln_proc(path, " appended", true).unwrap();
         content.clear();
-        File::open(path).unwrap().read_to_string(&mut content).unwrap();
+        File::open(path)
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
         assert_eq!(content, "test content appended");
     }
 
@@ -299,16 +305,22 @@ mod tests {
 
         // Test writing with newline handling
         writeln_str_file(path, "test line", false).unwrap();
-        
+
         // Verify content has newline
         let mut content = String::new();
-        File::open(path).unwrap().read_to_string(&mut content).unwrap();
+        File::open(path)
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
         assert_eq!(content, "test line\n");
 
         // Test empty string case
         writeln_str_file(path, "", true).unwrap();
         content.clear();
-        File::open(path).unwrap().read_to_string(&mut content).unwrap();
+        File::open(path)
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
         assert_eq!(content, "test line\n\n");
     }
 
