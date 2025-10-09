@@ -20,14 +20,14 @@
 #endif
 
 // Age ranges for histogram display (Statistics Mode only)
-#define AGE_RANGE_0_1MIN 0     // 0-1 minute
-#define AGE_RANGE_1_5MIN 1     // 1-5 minutes  
-#define AGE_RANGE_5_30MIN 2    // 5-30 minutes
+#define AGE_RANGE_0_1MIN 0 // 0-1 minute
+#define AGE_RANGE_1_5MIN 1 // 1-5 minutes
+#define AGE_RANGE_5_30MIN 2 // 5-30 minutes
 #define AGE_RANGE_30MIN_PLUS 3 // 30+ minutes
 
 // Age thresholds in nanoseconds for histogram
-#define AGE_THRESHOLD_1MIN (60ULL * 1000000000ULL)    // 1 minute
-#define AGE_THRESHOLD_5MIN (300ULL * 1000000000ULL)   // 5 minutes
+#define AGE_THRESHOLD_1MIN (60ULL * 1000000000ULL) // 1 minute
+#define AGE_THRESHOLD_5MIN (300ULL * 1000000000ULL) // 5 minutes
 #define AGE_THRESHOLD_30MIN (1800ULL * 1000000000ULL) // 30 minutes
 
 // Structure to store malloc event data
@@ -58,10 +58,11 @@ struct malloc_record {
 	s32 ustack_sz;
 	u64 ustack[PERF_MAX_STACK_DEPTH];
 	// New age tracking fields for Statistics Mode
-	u64 oldest_alloc_timestamp;  // Timestamp of oldest unfreed allocation
-	u32 total_unfreed_count;     // Count of unfreed allocations for average calculation
-	u64 total_age_sum_ns;        // Sum of all allocation ages for average calculation
-	u32 age_histogram[4];        // Count of allocations in each age range (for --age-histogram)
+	u64 oldest_alloc_timestamp; // Timestamp of oldest unfreed allocation
+	u32 total_unfreed_count; // Count of unfreed allocations for average calculation
+	u64 total_age_sum_ns; // Sum of all allocation ages for average calculation
+	u32 age_histogram
+		[4]; // Count of allocations in each age range (for --age-histogram)
 };
 
 // Compound key for malloc_event_records to ensure uniqueness
@@ -80,8 +81,8 @@ struct {
 
 // Structure to track allocations between uprobe and uretprobe
 struct inflight_alloc {
-	u32 size;               // Allocation size from malloc parameter
-	u64 timestamp_ns;       // Allocation timestamp from bpf_ktime_get_ns()
+	u32 size; // Allocation size from malloc parameter
+	u64 timestamp_ns; // Allocation timestamp from bpf_ktime_get_ns()
 };
 
 // Map to track in-flight allocations (between uprobe and uretprobe)
@@ -89,7 +90,7 @@ struct inflight_alloc {
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 10240);
-	__type(key, u32);  // tid
+	__type(key, u32); // tid
 	__type(value, struct inflight_alloc);
 } inflight_allocs SEC(".maps");
 
@@ -172,7 +173,6 @@ struct {
 #define STAT_SYMBOL_FAILURES 13
 #define STAT_ACTIVE_EVENTS 14
 #define STAT_ACTIVE_RECORDS 15
-
 
 int target_pid = 0;
 
@@ -268,30 +268,32 @@ static u32 calculate_age_histogram_range(u64 alloc_timestamp_ns)
 }
 
 // Helper function for updating age statistics on allocation (Statistics Mode)
-static void update_age_statistics(struct malloc_record *record, u64 alloc_timestamp_ns)
+static void update_age_statistics(struct malloc_record *record,
+				  u64 alloc_timestamp_ns)
 {
 	// Update oldest allocation timestamp
-	if (record->oldest_alloc_timestamp == 0 || 
+	if (record->oldest_alloc_timestamp == 0 ||
 	    alloc_timestamp_ns < record->oldest_alloc_timestamp) {
 		record->oldest_alloc_timestamp = alloc_timestamp_ns;
 	}
-	
+
 	// Update running totals for average age calculation
 	record->total_unfreed_count++;
 	record->total_age_sum_ns += alloc_timestamp_ns;
-	
+
 	// Update age histogram if needed
 	u32 age_range = calculate_age_histogram_range(alloc_timestamp_ns);
 	record->age_histogram[age_range]++;
 }
 
 // Helper function for updating age statistics on free (Statistics Mode)
-static void update_age_statistics_on_free(struct malloc_record *record, u64 freed_timestamp_ns)
+static void update_age_statistics_on_free(struct malloc_record *record,
+					  u64 freed_timestamp_ns)
 {
 	// Update unfreed count
 	if (record->total_unfreed_count > 0) {
 		record->total_unfreed_count--;
-		
+
 		// Subtract the freed allocation's timestamp from the sum
 		// Note: This is an approximation since we don't track individual allocations
 		// in Statistics Mode. We'll use the average timestamp as an estimate.
@@ -299,9 +301,11 @@ static void update_age_statistics_on_free(struct malloc_record *record, u64 free
 			// Avoid division by zero and ensure we don't underflow
 			u32 divisor = record->total_unfreed_count + 1;
 			if (divisor > 0) {
-				u64 avg_timestamp = record->total_age_sum_ns / divisor;
+				u64 avg_timestamp =
+					record->total_age_sum_ns / divisor;
 				if (record->total_age_sum_ns >= avg_timestamp) {
-					record->total_age_sum_ns -= avg_timestamp;
+					record->total_age_sum_ns -=
+						avg_timestamp;
 				} else {
 					record->total_age_sum_ns = 0;
 				}
@@ -329,10 +333,11 @@ static int handle_alloc_entry(void *ctx, u32 size, u32 stat_type)
 	// Store allocation info in inflight map
 	// Use per-CPU array to avoid ARM64 BPF verifier stack access issues
 	u32 zero = 0;
-	struct inflight_alloc *info = bpf_map_lookup_elem(&inflight_temp_heap, &zero);
+	struct inflight_alloc *info =
+		bpf_map_lookup_elem(&inflight_temp_heap, &zero);
 	if (!info)
 		return 0;
-	
+
 	info->size = size;
 	info->timestamp_ns = bpf_ktime_get_ns();
 
@@ -383,9 +388,10 @@ static int handle_alloc_return(void *ctx, void *ptr)
 		return 0;
 
 	// Lookup inflight allocation info
-	struct inflight_alloc *info = bpf_map_lookup_elem(&inflight_allocs, &tid);
+	struct inflight_alloc *info =
+		bpf_map_lookup_elem(&inflight_allocs, &tid);
 	if (!info)
-		return 0;  // No matching inflight allocation
+		return 0; // No matching inflight allocation
 
 	u32 size = info->size;
 	u64 timestamp_ns = info->timestamp_ns;
@@ -394,7 +400,7 @@ static int handle_alloc_return(void *ctx, void *ptr)
 	bpf_map_delete_elem(&inflight_allocs, &tid);
 
 	if (!ptr)
-		return 0;  // Allocation failed, nothing to track
+		return 0; // Allocation failed, nothing to track
 
 	// Get and increment sequence number for this pointer
 	u64 seq = 0;
@@ -408,7 +414,8 @@ static int handle_alloc_return(void *ctx, void *ptr)
 		// Trace Mode: Create malloc event record with full details
 		// Use per-CPU array to avoid stack overflow
 		u32 zero = 0;
-		struct malloc_event *event = bpf_map_lookup_elem(&event_alloc_heap, &zero);
+		struct malloc_event *event =
+			bpf_map_lookup_elem(&event_alloc_heap, &zero);
 		if (!event)
 			return 0;
 
@@ -416,7 +423,7 @@ static int handle_alloc_return(void *ctx, void *ptr)
 		event->size = size;
 		event->alloc_timestamp_ns = timestamp_ns;
 		event->sequence = seq;
-		event->free_tid = 0;  // 0 indicates not freed
+		event->free_tid = 0; // 0 indicates not freed
 		bpf_get_current_comm(event->comm, sizeof(event->comm));
 
 		// Collect stack trace for Trace Mode
@@ -424,11 +431,13 @@ static int handle_alloc_return(void *ctx, void *ptr)
 		if (max_depth > PERF_MAX_STACK_DEPTH)
 			max_depth = PERF_MAX_STACK_DEPTH;
 		u32 stack_size = max_depth * sizeof(u64);
-		event->ustack_sz = bpf_get_stack(ctx, event->ustack, stack_size, BPF_F_USER_STACK);
+		event->ustack_sz = bpf_get_stack(ctx, event->ustack, stack_size,
+						 BPF_F_USER_STACK);
 
 		// Store in malloc_event_records
 		struct malloc_event_key key = { .ptr = ptr, .sequence = seq };
-		int ret = bpf_map_update_elem(&malloc_event_records, &key, event, BPF_ANY);
+		int ret = bpf_map_update_elem(&malloc_event_records, &key,
+					      event, BPF_ANY);
 		if (ret != 0) {
 			increment_event_drop_stat(ret);
 		} else {
@@ -438,12 +447,14 @@ static int handle_alloc_return(void *ctx, void *ptr)
 		// Statistics Mode: Update aggregate statistics per process AND create event for size tracking
 
 		// Get or create malloc_record for this PID (per-process tracking)
-		struct malloc_record *entry = bpf_map_lookup_elem(&malloc_records, &pid);
+		struct malloc_record *entry =
+			bpf_map_lookup_elem(&malloc_records, &pid);
 
 		if (!entry) {
 			// Create new record - use per-CPU array to avoid stack overflow
 			u32 zero = 0;
-			struct malloc_record *new = bpf_map_lookup_elem(&alloc_heap, &zero);
+			struct malloc_record *new =
+				bpf_map_lookup_elem(&alloc_heap, &zero);
 			if (!new)
 				return 0;
 
@@ -460,7 +471,8 @@ static int handle_alloc_return(void *ctx, void *ptr)
 			if (max_depth > PERF_MAX_STACK_DEPTH)
 				max_depth = PERF_MAX_STACK_DEPTH;
 			u32 stack_size = max_depth * sizeof(u64);
-			new->ustack_sz = bpf_get_stack(ctx, new->ustack, stack_size, BPF_F_USER_STACK);
+			new->ustack_sz = bpf_get_stack(
+				ctx, new->ustack, stack_size, BPF_F_USER_STACK);
 
 			// Initialize age tracking
 			new->oldest_alloc_timestamp = timestamp_ns;
@@ -471,10 +483,12 @@ static int handle_alloc_return(void *ctx, void *ptr)
 			for (int i = 0; i < 4; i++) {
 				new->age_histogram[i] = 0;
 			}
-			u32 age_range = calculate_age_histogram_range(timestamp_ns);
+			u32 age_range =
+				calculate_age_histogram_range(timestamp_ns);
 			new->age_histogram[age_range] = 1;
 
-			int ret = bpf_map_update_elem(&malloc_records, &pid, new, BPF_ANY);
+			int ret = bpf_map_update_elem(&malloc_records, &pid,
+						      new, BPF_ANY);
 			if (ret != 0) {
 				increment_record_drop_stat(ret);
 			} else {
@@ -497,30 +511,38 @@ static int handle_alloc_return(void *ctx, void *ptr)
 				if (max_depth > PERF_MAX_STACK_DEPTH)
 					max_depth = PERF_MAX_STACK_DEPTH;
 				u32 stack_size = max_depth * sizeof(u64);
-				entry->ustack_sz = bpf_get_stack(ctx, entry->ustack, stack_size, BPF_F_USER_STACK);
+				entry->ustack_sz =
+					bpf_get_stack(ctx, entry->ustack,
+						      stack_size,
+						      BPF_F_USER_STACK);
 			}
 
 			// Update age statistics
 			update_age_statistics(entry, timestamp_ns);
 
-			bpf_map_update_elem(&malloc_records, &pid, entry, BPF_ANY);
+			bpf_map_update_elem(&malloc_records, &pid, entry,
+					    BPF_ANY);
 		}
 
 		// Also create malloc_event_record for size tracking (no stack trace)
 		// This is needed for accurate free_size calculation
 		u32 zero = 0;
-		struct malloc_event *event = bpf_map_lookup_elem(&event_alloc_heap, &zero);
+		struct malloc_event *event =
+			bpf_map_lookup_elem(&event_alloc_heap, &zero);
 		if (event) {
 			event->tid = tid;
 			event->size = size;
 			event->alloc_timestamp_ns = timestamp_ns;
 			event->sequence = seq;
-			event->ustack_sz = -1;  // No stack trace in Statistics Mode
-			event->free_tid = 0;  // Not freed yet
+			event->ustack_sz =
+				-1; // No stack trace in Statistics Mode
+			event->free_tid = 0; // Not freed yet
 			bpf_get_current_comm(event->comm, sizeof(event->comm));
 
-			struct malloc_event_key key = { .ptr = ptr, .sequence = seq };
-			bpf_map_update_elem(&malloc_event_records, &key, event, BPF_ANY);
+			struct malloc_event_key key = { .ptr = ptr,
+							.sequence = seq };
+			bpf_map_update_elem(&malloc_event_records, &key, event,
+					    BPF_ANY);
 		}
 	}
 
@@ -575,7 +597,8 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 
 	// Look up the malloc event to get actual allocation size
 	struct malloc_event_key key = { .ptr = ptr, .sequence = *seq };
-	struct malloc_event *event = bpf_map_lookup_elem(&malloc_event_records, &key);
+	struct malloc_event *event =
+		bpf_map_lookup_elem(&malloc_event_records, &key);
 	if (!event)
 		return 0; // No event found for this pointer
 
@@ -587,17 +610,20 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 		if (max_depth > PERF_MAX_STACK_DEPTH)
 			max_depth = PERF_MAX_STACK_DEPTH;
 		u32 stack_size = max_depth * sizeof(u64);
-		event->free_ustack_sz = bpf_get_stack(ctx, event->free_ustack, stack_size,
-						      BPF_F_USER_STACK);
-		bpf_get_current_comm(event->free_comm, sizeof(event->free_comm));
-		bpf_map_update_elem(&malloc_event_records, &key, event, BPF_ANY);
+		event->free_ustack_sz = bpf_get_stack(
+			ctx, event->free_ustack, stack_size, BPF_F_USER_STACK);
+		bpf_get_current_comm(event->free_comm,
+				     sizeof(event->free_comm));
+		bpf_map_update_elem(&malloc_event_records, &key, event,
+				    BPF_ANY);
 	} else {
 		// Statistics Mode: Update malloc record with actual freed size
 		// Get the actual allocation size from the event
 		u32 actual_size = event->size;
 
 		// Look up malloc_record by PID (per-process tracking)
-		struct malloc_record *entry = bpf_map_lookup_elem(&malloc_records, &pid);
+		struct malloc_record *entry =
+			bpf_map_lookup_elem(&malloc_records, &pid);
 		if (entry) {
 			// Update free_size with ACTUAL bytes freed (not just a counter)
 			entry->free_size += actual_size;
@@ -606,7 +632,8 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 			u64 current_time = bpf_ktime_get_ns();
 			update_age_statistics_on_free(entry, current_time);
 
-			bpf_map_update_elem(&malloc_records, &pid, entry, BPF_ANY);
+			bpf_map_update_elem(&malloc_records, &pid, entry,
+					    BPF_ANY);
 		}
 
 		// Delete the event to save memory (Statistics Mode only needs events temporarily)
