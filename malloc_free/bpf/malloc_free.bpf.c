@@ -130,6 +130,14 @@ struct {
 	__type(value, struct malloc_event);
 } event_alloc_heap SEC(".maps");
 
+// Per-CPU array to store inflight_alloc temporarily (ARM64 BPF verifier compatibility)
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, struct inflight_alloc);
+} inflight_temp_heap SEC(".maps");
+
 // Hash map to store malloc records
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -319,12 +327,16 @@ static int handle_alloc_entry(void *ctx, u32 size, u32 stat_type)
 	increment_stat(stat_type);
 
 	// Store allocation info in inflight map
-	struct inflight_alloc info = {
-		.size = size,
-		.timestamp_ns = bpf_ktime_get_ns(),
-	};
+	// Use per-CPU array to avoid ARM64 BPF verifier stack access issues
+	u32 zero = 0;
+	struct inflight_alloc *info = bpf_map_lookup_elem(&inflight_temp_heap, &zero);
+	if (!info)
+		return 0;
+	
+	info->size = size;
+	info->timestamp_ns = bpf_ktime_get_ns();
 
-	bpf_map_update_elem(&inflight_allocs, &tid, &info, BPF_ANY);
+	bpf_map_update_elem(&inflight_allocs, &tid, info, BPF_ANY);
 
 	return 0;
 }
