@@ -5,3 +5,5 @@
 .aider.*
 Cargo.lock
 *.patch
+*.log
+.requirements/*
