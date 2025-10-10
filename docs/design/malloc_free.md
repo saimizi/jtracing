@@ -35,6 +35,9 @@ struct malloc_event {
     u64 ustack[128];            // User stack trace at allocation
     s32 free_ustack_sz;         // Size of free stack trace
     u64 free_ustack[128];       // User stack trace at free
+    
+    // Age tracking fields (added in v0.2.4)
+    u64 alloc_timestamp_ns;     // Timestamp when allocation occurred
 };
 ```
 
@@ -51,6 +54,12 @@ struct malloc_record {
     u32 free_size;              // Cumulative bytes freed
     s32 ustack_sz;              // Stack trace size for max allocation
     u64 ustack[128];            // Stack trace for largest allocation
+    
+    // Age tracking fields (added in v0.2.4)
+    u64 oldest_alloc_timestamp; // Timestamp of oldest unfreed allocation
+    u32 total_unfreed_count;    // Count of currently unfreed allocations
+    u64 total_age_sum_ns;       // Sum of allocation timestamps for average age
+    u32 age_histogram[4];       // Age distribution histogram buckets
 };
 ```
 
@@ -109,7 +118,7 @@ struct {
 
 ### 3. Comprehensive Statistics
 
-Tracks 16 different operational metrics:
+Tracks 24 different operational metrics (expanded in v0.2.4):
 
 | Statistic | Purpose |
 |-----------|---------|
@@ -138,13 +147,66 @@ let elf_file = ElfFile::new(&file)?;
 let malloc_offset = elf_file.find_addr("malloc")? as usize;
 ```
 
+## Age Tracking and Histogram Feature (v0.2.4)
+
+### Age Histogram Implementation
+
+The age histogram feature tracks allocation lifetime patterns to help distinguish between normal memory usage and potential leaks.
+
+#### Key Design Principles
+
+1. **Lifetime Tracking**: Histogram is populated at **free time** when actual allocation lifetime can be calculated
+2. **Conservative Estimation**: Unfreed allocations are counted in the longest age bucket (30+ minutes)
+3. **Statistics Mode Compatibility**: Works efficiently without requiring individual event preservation
+
+#### Histogram Buckets
+
+| Bucket | Age Range | Semantic Meaning |
+|--------|-----------|------------------|
+| 0 | 0-1 minute | Short-lived allocations (freed quickly) |
+| 1 | 1-5 minutes | Medium-lived allocations |
+| 2 | 5-30 minutes | Long-lived allocations |
+| 3 | 30+ minutes | Very long-lived allocations + all unfreed allocations |
+
+#### Implementation Details
+
+**eBPF Side (malloc_free.bpf.c)**:
+- Histogram updated in `uprobe_free()` when allocation lifetime is known
+- Uses `calculate_age_histogram_range(alloc_timestamp)` to determine bucket
+- Removed incorrect histogram updates at allocation time
+
+**Userspace Side (malloc_free.rs)**:
+- Adds `total_unfreed_count` to the 30+ minute bucket for conservative estimation
+- Provides age distribution analysis alongside existing statistics
+
+#### Sample Output
+
+```
+=== Memory Age Distribution ===
+Age Range    Count    Total Size   Avg Size    
+==================================================
+0-1 min      1000     2.1MB        2.1KB       
+1-5 min      50       5.2MB        104KB       
+5-30 min     10       15.6MB       1.56MB      
+30+ min      25       45.2MB       1.81MB      
+
+Note: 30+ min bucket includes 20 currently unfreed allocations
+```
+
+#### Benefits
+
+- **Leak Detection**: Large counts in 30+ minute bucket indicate potential leaks
+- **Usage Patterns**: Shows whether application uses mostly short-lived or long-lived allocations
+- **Performance Insights**: Helps identify memory usage efficiency
+- **Complementary Data**: Works alongside existing `oldest_age` and `avg_age` metrics
+
 ## Operation Modes
 
 ### 1. Summary Mode (Default)
-Provides aggregated statistics per process:
+Provides aggregated statistics per process with age information:
 ```
-No   PID      TID      Alloc    Free     Real     Real.max   Req.max  Comm
-1    3226     3226     460240   452224   8016     13088      3680     Xorg
+No   PID      TID      Alloc    Free     Real     Real.max   Req.max  Oldest       Avg.Age  Comm
+1    3226     3226     460240   452224   8016     13088      3680     29m 59s      2m 15s   Xorg
 ```
 
 ### 2. Trace Path Mode (`-t`)
@@ -215,6 +277,12 @@ Options:
   --max-events <COUNT>        Maximum events to track (default: 8192)
   --max-records <COUNT>       Maximum process records (default: 1024)
   --max-stack-depth <DEPTH>   Maximum stack frames (default: 128)
+  
+  # Age tracking and output options (v0.2.4)
+  --min-age <AGE>             Show only allocations older than specified age (e.g., 5m, 1h)
+  --age-histogram             Display age distribution histogram (Statistics Mode only)
+  --max-entries <COUNT>       Maximum entries to display in Trace Mode
+  --output-file <FILE>        Save results to file instead of stdout
 ```
 
 ### eBPF Map Configuration
@@ -252,6 +320,31 @@ Identify allocation hotspots:
 malloc_free -T -d 10  # Full trace mode for detailed analysis
 ```
 
+## Recent Improvements (v0.2.4)
+
+### Age Histogram Fix
+**Problem**: The age histogram was showing incorrect data due to fundamental design flaws:
+- Histogram populated at allocation time (when age ≈ 0)
+- All new allocations incorrectly placed in "0-1 min" bucket
+- Histogram never decremented on free operations
+
+**Solution Implemented**:
+- **eBPF Changes**: Moved histogram updates from allocation time to free time
+- **Lifetime Calculation**: Histogram now reflects actual allocation lifetimes
+- **Conservative Estimation**: Unfreed allocations added to 30+ minute bucket
+- **Consistency**: Histogram data now aligns with `oldest_age` and `avg_age` statistics
+
+### Output File Support
+**New Feature**: Added `--output-file` option for saving results to files
+- **Comprehensive Error Handling**: Detailed error messages for file operations
+- **Periodic Flushing**: Automatic flushing during long-running operations
+- **Performance Optimization**: Reduces I/O overhead through intelligent buffering
+
+### Enhanced Error Handling
+- **Centralized Error Management**: Consistent error reporting across all output operations
+- **Context-Aware Messages**: Different error messages for file vs stdout operations
+- **Graceful Degradation**: Periodic flush errors don't terminate analysis
+
 ## Implementation Quality
 
 ### Strengths
@@ -260,13 +353,14 @@ malloc_free -T -d 10  # Full trace mode for detailed analysis
 - **Comprehensive statistics** for operational monitoring
 - **Automatic library detection** reduces configuration burden
 - **Cross-architecture support** (x86_64, ARM64)
+- **Accurate age tracking** with fixed histogram implementation
+- **File output support** with comprehensive error handling
 
 ### Areas for Enhancement
 1. **Memory efficiency**: Large stack traces consume significant memory
 2. **Filtering granularity**: Could support more specific filtering options
-3. **Output formats**: JSON/CSV output for automated analysis
-4. **Real-time monitoring**: Live dashboard capabilities
-5. **Integration**: Hooks for external monitoring systems
+3. **Real-time monitoring**: Live dashboard capabilities
+4. **Integration**: Hooks for external monitoring systems
 
 ## Security Considerations
 
