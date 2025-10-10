@@ -587,6 +587,11 @@ Age Tracking Examples:
     malloc_free -p 1234 --age-histogram          # Show age distribution in Statistics Mode
     malloc_free --min-age 1h                     # Trace Mode: allocations older than 1 hour
 
+Output Limiting Examples:
+    malloc_free -p 1234 -t --max-entries 10      # Show only first 10 allocations in Trace Mode
+    malloc_free --min-age 5m --max-entries 20    # Show first 20 old allocations
+    malloc_free -p 1234 -t --max-entries 50      # Limit output to 50 entries with stack traces
+
 Age Format:
     300 or 300s    = 300 seconds
     5m             = 5 minutes  
@@ -668,6 +673,10 @@ struct Cli {
     ///Show age distribution histogram (Statistics Mode only).
     #[clap(long)]
     age_histogram: bool,
+
+    ///Maximum number of entries to display in Trace Mode (default: unlimited).
+    #[clap(long)]
+    max_entries: Option<usize>,
 }
 
 fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceError> {
@@ -738,7 +747,18 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
         println!("{}", "=".repeat(60));
 
         let mut idx = 1_usize;
+        let max_display = cli.max_entries.unwrap_or(usize::MAX);
+        let total_entries = filtered_events.len();
+
         for (event, comm, free_comm, tid, free_tid) in filtered_events {
+            // Check if we've reached the maximum number of entries to display
+            if idx > max_display {
+                println!(
+                    "... (showing first {} entries, {} total entries found)",
+                    max_display, total_entries
+                );
+                break;
+            }
             // Calculate and display age information when using age filtering
             let age_info = if min_age_filter.is_some() {
                 if event.alloc_timestamp_ns > 0 {
@@ -1709,6 +1729,71 @@ mod tests {
         assert_eq!(format_size(1048576), "1.0MB");
         assert_eq!(format_size(1073741824), "1.0GB");
         assert_eq!(format_size(2147483648), "2.0GB");
+    }
+
+    /// Test max-entries CLI option parsing and validation
+    #[test]
+    fn test_max_entries_option() {
+        // Test default (None)
+        let cli_default = Cli::default();
+        assert_eq!(cli_default.max_entries, None);
+
+        // Test with specific value
+        let cli_with_limit = Cli {
+            max_entries: Some(10),
+            ..Default::default()
+        };
+        assert_eq!(cli_with_limit.max_entries, Some(10));
+
+        // Test unlimited (None) vs limited behavior
+        let unlimited = cli_default.max_entries.unwrap_or(usize::MAX);
+        let limited = cli_with_limit.max_entries.unwrap_or(usize::MAX);
+
+        assert_eq!(unlimited, usize::MAX);
+        assert_eq!(limited, 10);
+    }
+
+    /// Test max-entries functionality with mock filtered events
+    #[test]
+    fn test_max_entries_filtering_logic() {
+        // Simulate the logic used in process_events
+        let mock_events = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]; // 10 mock events
+
+        // Test unlimited (default behavior)
+        let max_display_unlimited = None.unwrap_or(usize::MAX);
+        let mut count_unlimited = 0;
+        for (idx, _event) in mock_events.iter().enumerate() {
+            let display_idx = idx + 1;
+            if display_idx > max_display_unlimited {
+                break;
+            }
+            count_unlimited += 1;
+        }
+        assert_eq!(count_unlimited, 10); // All events displayed
+
+        // Test limited to 3 entries
+        let max_display_limited = Some(3).unwrap_or(usize::MAX);
+        let mut count_limited = 0;
+        for (idx, _event) in mock_events.iter().enumerate() {
+            let display_idx = idx + 1;
+            if display_idx > max_display_limited {
+                break;
+            }
+            count_limited += 1;
+        }
+        assert_eq!(count_limited, 3); // Only first 3 events displayed
+
+        // Test edge case: limit larger than available events
+        let max_display_large = Some(20).unwrap_or(usize::MAX);
+        let mut count_large = 0;
+        for (idx, _event) in mock_events.iter().enumerate() {
+            let display_idx = idx + 1;
+            if display_idx > max_display_large {
+                break;
+            }
+            count_large += 1;
+        }
+        assert_eq!(count_large, 10); // All available events displayed
     }
 
     // Helper functions for mode switching tests
