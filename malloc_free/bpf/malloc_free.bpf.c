@@ -281,9 +281,8 @@ static void update_age_statistics(struct malloc_record *record,
 	record->total_unfreed_count++;
 	record->total_age_sum_ns += alloc_timestamp_ns;
 
-	// Update age histogram if needed
-	u32 age_range = calculate_age_histogram_range(alloc_timestamp_ns);
-	record->age_histogram[age_range]++;
+	// Histogram will be updated in uprobe_free() when allocation is freed
+	// (tracking allocation lifetime, not age at allocation time)
 }
 
 // Helper function for updating age statistics on free (Statistics Mode)
@@ -479,13 +478,10 @@ static int handle_alloc_return(void *ctx, void *ptr)
 			new->total_unfreed_count = 1;
 			new->total_age_sum_ns = timestamp_ns;
 
-			// Initialize histogram
+			// Initialize histogram (will be populated as allocations are freed)
 			for (int i = 0; i < 4; i++) {
 				new->age_histogram[i] = 0;
 			}
-			u32 age_range =
-				calculate_age_histogram_range(timestamp_ns);
-			new->age_histogram[age_range] = 1;
 
 			int ret = bpf_map_update_elem(&malloc_records, &pid,
 						      new, BPF_ANY);
@@ -631,6 +627,12 @@ int BPF_KPROBE(uprobe_free, void *ptr)
 			// Update age statistics when memory is freed
 			u64 current_time = bpf_ktime_get_ns();
 			update_age_statistics_on_free(entry, current_time);
+
+			// Update age histogram based on allocation lifetime
+			// This tracks how long the allocation lived before being freed
+			u64 alloc_timestamp = event->alloc_timestamp_ns;
+			u32 age_range = calculate_age_histogram_range(alloc_timestamp);
+			entry->age_histogram[age_range]++;
 
 			bpf_map_update_elem(&malloc_records, &pid, entry,
 					    BPF_ANY);

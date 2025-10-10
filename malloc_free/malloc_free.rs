@@ -1206,6 +1206,15 @@ fn process_events(
                                     }
                                 }
                             }
+
+                            // Add currently unfreed allocations to the 30+ minute bucket
+                            // This is a conservative estimate - if they're still unfreed, they're long-lived
+                            if record.total_unfreed_count > 0 {
+                                for _ in 0..record.total_unfreed_count {
+                                    histogram.add_allocation(2700, avg_alloc_size);
+                                    // 45 minutes as representative
+                                }
+                            }
                         }
                     }
                 }
