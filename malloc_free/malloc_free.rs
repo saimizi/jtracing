@@ -1,7 +1,9 @@
 #[allow(unused)]
 use {
     byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt},
+    chrono,
     clap::Parser,
+    ctrlc,
     error_stack::{Report, Result, ResultExt},
     jlogger_tracing::{
         jdebug, jerror, jinfo, jtrace, jwarn, JloggerBuilder, LevelFilter, LogTimeFormat,
@@ -17,7 +19,7 @@ use {
         collections::HashMap,
         io::{self, BufRead, BufReader, Cursor},
         mem,
-        path::Path,
+        path::{Path, PathBuf},
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc, OnceLock,
@@ -50,9 +52,58 @@ fn get_monotonic_time_ns() -> Result<u64, JtraceError> {
 // Global baseline timestamp for age calculations
 static TRACE_START_TIMESTAMP: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
 
+// Global interruption flag for signal handling
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+// Flush tracking for periodic flushing
+struct FlushTracker {
+    last_flush: Instant,
+    flush_interval: Duration,
+    operations_since_flush: usize,
+    operations_threshold: usize,
+}
+
+impl FlushTracker {
+    fn new() -> Self {
+        Self {
+            last_flush: Instant::now(),
+            flush_interval: Duration::from_secs(5), // Flush every 5 seconds
+            operations_since_flush: 0,
+            operations_threshold: 100, // Or every 100 operations
+        }
+    }
+
+    fn should_flush(&mut self) -> bool {
+        self.operations_since_flush += 1;
+
+        let time_based = self.last_flush.elapsed() >= self.flush_interval;
+        let operation_based = self.operations_since_flush >= self.operations_threshold;
+
+        time_based || operation_based
+    }
+
+    fn record_flush(&mut self) {
+        self.last_flush = Instant::now();
+        self.operations_since_flush = 0;
+    }
+}
+
 #[path = "bpf/malloc_free.skel.rs"]
 mod malloc_free;
 use malloc_free::*;
+
+// Convenience macros for formatted writing
+macro_rules! output_writeln {
+    ($output:expr, $($arg:tt)*) => {
+        $output.write_formatted(format_args!("{}\n", format_args!($($arg)*)))
+    };
+}
+
+macro_rules! output_write {
+    ($output:expr, $($arg:tt)*) => {
+        $output.write_formatted(format_args!($($arg)*))
+    };
+}
 
 /// Age duration parsing and validation for CLI input.
 ///
@@ -307,13 +358,17 @@ impl AgeHistogram {
         }
     }
 
-    fn print(&self) {
-        println!("\n=== Memory Age Distribution ===");
-        println!(
+    fn print(&self, output: &mut OutputManager) -> Result<(), JtraceError> {
+        output_writeln!(output, "\n=== Memory Age Distribution ===")?;
+        output_writeln!(
+            output,
             "{:<12} {:<8} {:<12} {:<12}",
-            "Age Range", "Count", "Total Size", "Avg Size"
-        );
-        println!("{}", "=".repeat(50));
+            "Age Range",
+            "Count",
+            "Total Size",
+            "Avg Size"
+        )?;
+        output_writeln!(output, "{}", "=".repeat(50))?;
 
         for range in &self.ranges {
             let avg_size = if range.count > 0 {
@@ -322,14 +377,16 @@ impl AgeHistogram {
                 0
             };
 
-            println!(
+            output_writeln!(
+                output,
                 "{:<12} {:<8} {:<12} {:<12}",
                 range.name,
                 range.count,
                 format_size(range.total_size),
                 format_size(avg_size)
-            );
+            )?;
         }
+        Ok(())
     }
 }
 
@@ -592,6 +649,11 @@ Output Limiting Examples:
     malloc_free --min-age 5m --max-entries 20    # Show first 20 old allocations
     malloc_free -p 1234 -t --max-entries 50      # Limit output to 50 entries with stack traces
 
+Output File Examples:
+    malloc_free -p 1234 -o report.txt            # Save results to report.txt
+    malloc_free --age-histogram -o analysis.log  # Save age histogram to analysis.log
+    malloc_free -t --min-age 5m -o leaks.txt     # Save old allocations to leaks.txt
+
 Age Format:
     300 or 300s    = 300 seconds
     5m             = 5 minutes  
@@ -677,9 +739,153 @@ struct Cli {
     ///Maximum number of entries to display in Trace Mode (default: unlimited).
     #[clap(long)]
     max_entries: Option<usize>,
+
+    ///Output file path to save results instead of printing to stdout
+    #[clap(long, value_name = "FILE")]
+    output_file: Option<std::path::PathBuf>,
 }
 
-fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceError> {
+// Output writer abstraction for file and stdout output
+use std::io::{BufWriter, Write};
+
+/// Trait for writing output to different destinations (stdout or file)
+trait OutputWriter {
+    fn write_line(&mut self, line: &str) -> Result<(), JtraceError>;
+    fn write_formatted(&mut self, args: std::fmt::Arguments) -> Result<(), JtraceError>;
+    fn flush(&mut self) -> Result<(), JtraceError>;
+}
+
+/// Implementation for stdout output
+struct StdoutWriter;
+
+impl OutputWriter for StdoutWriter {
+    fn write_line(&mut self, line: &str) -> Result<(), JtraceError> {
+        println!("{}", line);
+        Ok(())
+    }
+
+    fn write_formatted(&mut self, args: std::fmt::Arguments) -> Result<(), JtraceError> {
+        print!("{}", args);
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), JtraceError> {
+        use std::io::Write;
+        std::io::stdout().flush().map_err(|e| {
+            Report::new(JtraceError::IOError)
+                .attach_printable(format!("Failed to flush stdout: {}", e))
+        })
+    }
+}
+
+/// Implementation for file output
+struct FileWriter {
+    file: BufWriter<std::fs::File>,
+    path: PathBuf,
+}
+
+impl FileWriter {
+    fn new(path: PathBuf) -> Result<Self, JtraceError> {
+        let file = handle_file_operation("create", &path, || {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&path)
+        })?;
+
+        Ok(Self {
+            file: BufWriter::new(file),
+            path,
+        })
+    }
+}
+
+impl OutputWriter for FileWriter {
+    fn write_line(&mut self, line: &str) -> Result<(), JtraceError> {
+        handle_file_operation("write_line", &self.path, || writeln!(self.file, "{}", line))
+    }
+
+    fn write_formatted(&mut self, args: std::fmt::Arguments) -> Result<(), JtraceError> {
+        handle_file_operation("write_formatted", &self.path, || {
+            write!(self.file, "{}", args)
+        })
+    }
+
+    fn flush(&mut self) -> Result<(), JtraceError> {
+        handle_file_operation("flush", &self.path, || self.file.flush())
+    }
+}
+
+impl Drop for FileWriter {
+    fn drop(&mut self) {
+        // Ensure data is flushed when FileWriter is dropped
+        let _ = self.flush();
+    }
+}
+
+/// Output manager that handles writing to either stdout or file
+struct OutputManager {
+    writer: Box<dyn OutputWriter>,
+    flush_tracker: FlushTracker,
+}
+
+impl OutputManager {
+    fn new(output_file: Option<PathBuf>) -> Result<Self, JtraceError> {
+        let writer: Box<dyn OutputWriter> = match output_file {
+            Some(path) => Box::new(FileWriter::new(path)?),
+            None => Box::new(StdoutWriter),
+        };
+
+        Ok(Self {
+            writer,
+            flush_tracker: FlushTracker::new(),
+        })
+    }
+
+    fn write_line(&mut self, line: &str) -> Result<(), JtraceError> {
+        self.writer.write_line(line)
+    }
+
+    fn write_formatted(&mut self, args: std::fmt::Arguments) -> Result<(), JtraceError> {
+        self.writer.write_formatted(args)
+    }
+
+    fn flush(&mut self) -> Result<(), JtraceError> {
+        let result = self.writer.flush();
+        if result.is_ok() {
+            self.flush_tracker.record_flush();
+        }
+        result
+    }
+
+    /// Perform periodic flush if needed based on time or operation count
+    /// Returns true if flush was performed, false otherwise
+    fn flush_if_needed(&mut self) -> bool {
+        if self.flush_tracker.should_flush() {
+            match self.flush() {
+                Ok(()) => {
+                    jtrace!("Periodic flush completed successfully");
+                    true
+                }
+                Err(e) => {
+                    jwarn!("Periodic flush failed (continuing analysis): {}", e);
+                    // Don't propagate flush errors during periodic flushing
+                    // to avoid terminating the analysis
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    }
+}
+
+fn process_events(
+    cli: &Cli,
+    maps: &mut MallocFreeMaps,
+    output: &mut OutputManager,
+) -> Result<(), JtraceError> {
     // Parse age filter if provided
     let min_age_filter = if let Some(age_str) = &cli.min_age {
         Some(AgeDuration::parse(age_str)?)
@@ -705,6 +911,15 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
 
         // Apply age filtering
         for (_key, event) in events.iter() {
+            // Check for interruption periodically
+            if check_interrupted() {
+                write_interruption_marker(output)?;
+                output.flush()?;
+                return Ok(());
+            }
+
+            // Perform periodic flush during filtering
+            output.flush_if_needed();
             let comm = unsafe { bytes_to_string(event.comm.as_ptr()) };
             let free_comm = unsafe { bytes_to_string(event.free_comm.as_ptr()) };
 
@@ -740,23 +955,42 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
 
         // Display header with age information when using age filtering
         if min_age_filter.is_some() {
-            println!("{:<4} {:<8} {:<12} {:<8}", "No", "Size", "Age", "Process");
+            output_writeln!(
+                output,
+                "{:<4} {:<8} {:<12} {:<8}",
+                "No",
+                "Size",
+                "Age",
+                "Process"
+            )?;
         } else {
-            println!("{:<4} {:<8} {:<8}", "No", "Size", "Process");
+            output_writeln!(output, "{:<4} {:<8} {:<8}", "No", "Size", "Process")?;
         }
-        println!("{}", "=".repeat(60));
+        output_writeln!(output, "{}", "=".repeat(60))?;
 
         let mut idx = 1_usize;
         let max_display = cli.max_entries.unwrap_or(usize::MAX);
         let total_entries = filtered_events.len();
 
         for (event, comm, free_comm, tid, free_tid) in filtered_events {
+            // Check for interruption
+            if check_interrupted() {
+                write_interruption_marker(output)?;
+                output.flush()?;
+                return Ok(());
+            }
+
+            // Perform periodic flush if needed
+            output.flush_if_needed();
+
             // Check if we've reached the maximum number of entries to display
             if idx > max_display {
-                println!(
+                output_writeln!(
+                    output,
                     "... (showing first {} entries, {} total entries found)",
-                    max_display, total_entries
-                );
+                    max_display,
+                    total_entries
+                )?;
                 break;
             }
             // Calculate and display age information when using age filtering
@@ -777,24 +1011,49 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
 
             if free_tid == 0 {
                 if min_age_filter.is_some() {
-                    println!(
+                    output_writeln!(
+                        output,
                         "{:<4} {:<8} {} malloc: {:<10}({})",
-                        idx, event.size, age_info, comm, tid
-                    );
+                        idx,
+                        event.size,
+                        age_info,
+                        comm,
+                        tid
+                    )?;
                 } else {
-                    println!("{:<4} {:<8} malloc: {:<10}({})", idx, event.size, comm, tid);
+                    output_writeln!(
+                        output,
+                        "{:<4} {:<8} malloc: {:<10}({})",
+                        idx,
+                        event.size,
+                        comm,
+                        tid
+                    )?;
                 }
             } else {
                 if min_age_filter.is_some() {
-                    println!(
+                    output_writeln!(
+                        output,
                         "{:<4} {:<8} {} malloc: {:<10}({}) free: {:<10}({})",
-                        idx, event.size, age_info, comm, tid, free_comm, free_tid
-                    );
+                        idx,
+                        event.size,
+                        age_info,
+                        comm,
+                        tid,
+                        free_comm,
+                        free_tid
+                    )?;
                 } else {
-                    println!(
+                    output_writeln!(
+                        output,
                         "{:<4} {:<8} malloc: {:<10}({}) free: {:<10}({})",
-                        idx, event.size, comm, tid, free_comm, free_tid
-                    );
+                        idx,
+                        event.size,
+                        comm,
+                        tid,
+                        free_comm,
+                        free_tid
+                    )?;
                 }
             }
             idx += 1;
@@ -806,7 +1065,7 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
                 match ExecMap::new(tid_to_pid(event.tid as i32).unwrap_or(event.tid as i32) as u32)
                 {
                     Ok(mut em) => {
-                        println!("{:<4} Backtrace for malloc():", " ");
+                        output_writeln!(output, "{:<4} Backtrace for malloc():", " ")?;
                         for addr in ustack {
                             let (offset, symbol, file) = em
                                 .symbol(*addr)
@@ -815,15 +1074,23 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
                                     Report::new(JtraceError::SymbolAnalyzerError)
                                 })
                                 .unwrap_or((0, "[unknown]".to_string(), "unknown".to_string()));
-                            println!("{:<4} {:x}(+{})  {} {}", " ", addr, offset, symbol, file);
+                            output_writeln!(
+                                output,
+                                "{:<4} {:x}(+{})  {} {}",
+                                " ",
+                                addr,
+                                offset,
+                                symbol,
+                                file
+                            )?;
                         }
                     }
                     Err(e) => {
                         jwarn!("Failed to get ExecMap for tid {}: {}", event.tid, e);
-                        println!("    No map found.");
+                        output_writeln!(output, "    No map found.")?;
                     }
                 }
-                println!();
+                output_writeln!(output, "")?;
 
                 if free_tid != 0 {
                     let free_ustack_sz = (event.free_ustack_sz / 8) as usize;
@@ -832,7 +1099,7 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
                         tid_to_pid(event.free_tid as i32).unwrap_or(event.tid as i32) as u32,
                     ) {
                         Ok(mut em) => {
-                            println!("{:<4} Backtrace for free():", " ");
+                            output_writeln!(output, "{:<4} Backtrace for free():", " ")?;
                             for addr in free_ustack {
                                 let (offset, symbol, file) = em
                                     .symbol(*addr)
@@ -845,15 +1112,23 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
                                         Report::new(JtraceError::SymbolAnalyzerError)
                                     })
                                     .unwrap_or((0, "[unknown]".to_string(), "unknown".to_string()));
-                                println!("{:<4} {:x}(+{})  {} {}", " ", addr, offset, symbol, file);
+                                output_writeln!(
+                                    output,
+                                    "{:<4} {:x}(+{})  {} {}",
+                                    " ",
+                                    addr,
+                                    offset,
+                                    symbol,
+                                    file
+                                )?;
                             }
                         }
                         Err(e) => {
                             jwarn!("Failed to get ExecMap for tid {}: {}", event.free_tid, e);
-                            println!("    No map found.");
+                            output_writeln!(output, "    No map found.")?;
                         }
                     }
-                    println!();
+                    output_writeln!(output, "")?;
                 }
             } // End of stack trace disp
         }
@@ -863,9 +1138,9 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
 
         if process_stats.is_empty() {
             if min_age_filter.is_some() {
-                println!("No allocations found matching the age criteria.");
+                output_writeln!(output, "No allocations found matching the age criteria.")?;
             } else {
-                println!("No allocation data found.");
+                output_writeln!(output, "No allocation data found.")?;
             }
             return Ok(());
         }
@@ -886,6 +1161,10 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
 
                 for key in malloc_records.keys() {
                     total_records += 1;
+
+                    // Perform periodic flush during histogram processing
+                    output.flush_if_needed();
+
                     if let Some(data) = malloc_records
                         .lookup(&key, MapFlags::ANY)
                         .change_context(JtraceError::BPFError)?
@@ -931,27 +1210,43 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
                     }
                 }
 
-                println!(
+                output_writeln!(
+                    output,
                     "Debug: Total records: {}, Records with histogram data: {}",
-                    total_records, records_with_histogram_data
-                );
+                    total_records,
+                    records_with_histogram_data
+                )?;
 
-                histogram.print();
-                println!();
+                histogram.print(output)?;
+                output_writeln!(output, "")?;
             }
         }
 
         // Display statistics with age information
-        println!(
+        output_writeln!(
+            output,
             "{:<4} {:<8} {:<8} {:<8} {:<8} {:<8} {:<10} {:<8} {:<12} {:<8} Comm",
-            "No", "PID", "TID", "Alloc", "Free", "Real", "Real.max", "Req.max", "Oldest", "Avg.Age"
-        );
+            "No",
+            "PID",
+            "TID",
+            "Alloc",
+            "Free",
+            "Real",
+            "Real.max",
+            "Req.max",
+            "Oldest",
+            "Avg.Age"
+        )?;
 
         let mut sorted_stats: Vec<_> = process_stats.into_iter().collect();
         sorted_stats.sort_by_key(|(_, stats)| std::cmp::Reverse(stats.filtered_alloc_size));
 
         for (idx, (_, stats)) in sorted_stats.iter().enumerate() {
-            println!(
+            // Perform periodic flush during statistics display
+            output.flush_if_needed();
+
+            output_writeln!(
+                output,
                 "{:<4} {:<8} {:<8} {:<8} {:<8} {:<8} {:<10} {:<8} {:<12} {:<8} {}",
                 idx + 1,
                 stats.pid,
@@ -964,21 +1259,28 @@ fn process_events(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceErro
                 stats.oldest_age_str,
                 stats.avg_age_str,
                 stats.comm
-            );
+            )?;
         }
     }
 
     Ok(())
 }
 
-fn print_statistics(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceError> {
+fn print_statistics(
+    cli: &Cli,
+    maps: &mut MallocFreeMaps,
+    output: &mut OutputManager,
+) -> Result<(), JtraceError> {
     let stats_map = maps.stats();
 
-    println!("\n=== Statistics ===");
+    output_writeln!(output, "\n=== Statistics ===")?;
 
     // Read statistics from all CPUs and sum them up (expanded for age statistics)
     let mut stats_totals = vec![0u64; 24]; // Increased from 20 to 24
     for cpu in 0..num_cpus::get() {
+        // Perform periodic flush during statistics collection
+        output.flush_if_needed();
+
         for stat_idx in 0..24 {
             // Increased from 20 to 24
             let key_bytes = (stat_idx as u32).to_ne_bytes();
@@ -999,39 +1301,39 @@ fn print_statistics(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceEr
         }
     }
 
-    println!("  Malloc calls: {}", stats_totals[0]);
-    println!("  Calloc calls: {}", stats_totals[1]);
-    println!("  Realloc calls: {}", stats_totals[2]);
-    println!("  Aligned_alloc calls: {}", stats_totals[3]);
-    println!("  Free calls: {}", stats_totals[4]);
+    output_writeln!(output, "  Malloc calls: {}", stats_totals[0])?;
+    output_writeln!(output, "  Calloc calls: {}", stats_totals[1])?;
+    output_writeln!(output, "  Realloc calls: {}", stats_totals[2])?;
+    output_writeln!(output, "  Aligned_alloc calls: {}", stats_totals[3])?;
+    output_writeln!(output, "  Free calls: {}", stats_totals[4])?;
 
     let total_alloc_calls = stats_totals[0] + stats_totals[1] + stats_totals[2] + stats_totals[3];
-    println!("  Total allocation calls: {}", total_alloc_calls);
+    output_writeln!(output, "  Total allocation calls: {}", total_alloc_calls)?;
 
     // Event drop statistics
     let total_event_drops = stats_totals[5] + stats_totals[6] + stats_totals[7] + stats_totals[8];
-    println!("  Event drops: {} (total)", total_event_drops);
+    output_writeln!(output, "  Event drops: {} (total)", total_event_drops)?;
     if total_event_drops > 0 {
-        println!("    - Map full: {}", stats_totals[5]);
-        println!("    - Invalid key: {}", stats_totals[6]);
-        println!("    - Out of memory: {}", stats_totals[7]);
-        println!("    - Other errors: {}", stats_totals[8]);
+        output_writeln!(output, "    - Map full: {}", stats_totals[5])?;
+        output_writeln!(output, "    - Invalid key: {}", stats_totals[6])?;
+        output_writeln!(output, "    - Out of memory: {}", stats_totals[7])?;
+        output_writeln!(output, "    - Other errors: {}", stats_totals[8])?;
     }
 
     // Record drop statistics
     let total_record_drops =
         stats_totals[9] + stats_totals[10] + stats_totals[11] + stats_totals[12];
-    println!("  Record drops: {} (total)", total_record_drops);
+    output_writeln!(output, "  Record drops: {} (total)", total_record_drops)?;
     if total_record_drops > 0 {
-        println!("    - Map full: {}", stats_totals[9]);
-        println!("    - Invalid key: {}", stats_totals[10]);
-        println!("    - Out of memory: {}", stats_totals[11]);
-        println!("    - Other errors: {}", stats_totals[12]);
+        output_writeln!(output, "    - Map full: {}", stats_totals[9])?;
+        output_writeln!(output, "    - Invalid key: {}", stats_totals[10])?;
+        output_writeln!(output, "    - Out of memory: {}", stats_totals[11])?;
+        output_writeln!(output, "    - Other errors: {}", stats_totals[12])?;
     }
 
-    println!("  Symbol failures: {}", stats_totals[13]);
-    println!("  Active events: {}", stats_totals[14]);
-    println!("  Active records: {}", stats_totals[15]);
+    output_writeln!(output, "  Symbol failures: {}", stats_totals[13])?;
+    output_writeln!(output, "  Active events: {}", stats_totals[14])?;
+    output_writeln!(output, "  Active records: {}", stats_totals[15])?;
 
     // Calculate map utilization
     let malloc_records = maps.malloc_records();
@@ -1046,38 +1348,120 @@ fn print_statistics(cli: &Cli, maps: &mut MallocFreeMaps) -> Result<(), JtraceEr
         event_count += 1;
     }
 
-    println!("\n=== Map Utilization ===");
-    println!(
+    output_writeln!(output, "\n=== Map Utilization ===")?;
+    output_writeln!(
+        output,
         "  Event records: {}/{} ({:.1}%)",
         event_count,
         cli.max_events,
         (event_count as f64 / cli.max_events as f64) * 100.0
-    );
-    println!(
+    )?;
+    output_writeln!(
+        output,
         "  Process records: {}/{} ({:.1}%)",
         record_count,
         cli.max_records,
         (record_count as f64 / cli.max_records as f64) * 100.0
-    );
+    )?;
 
     let total_drops = total_event_drops + total_record_drops;
     if total_drops > 0 {
-        println!("\n⚠️  WARNING: {} drops detected!", total_drops);
+        output_writeln!(output, "\n⚠️  WARNING: {} drops detected!", total_drops)?;
         if stats_totals[5] > 0 || stats_totals[9] > 0 {
-            println!("   - Maps are full! Consider increasing --max-events or --max-records");
+            output_writeln!(
+                output,
+                "   - Maps are full! Consider increasing --max-events or --max-records"
+            )?;
         }
         if stats_totals[7] > 0 || stats_totals[11] > 0 {
-            println!("   - Out of memory detected! System may be under heavy load");
+            output_writeln!(
+                output,
+                "   - Out of memory detected! System may be under heavy load"
+            )?;
         }
         if stats_totals[6] > 0 || stats_totals[10] > 0 {
-            println!("   - Key conflicts detected! This may indicate internal issues");
+            output_writeln!(
+                output,
+                "   - Key conflicts detected! This may indicate internal issues"
+            )?;
         }
         if stats_totals[8] > 0 || stats_totals[12] > 0 {
-            println!("   - Other system errors detected");
+            output_writeln!(output, "   - Other system errors detected")?;
         }
     }
 
     Ok(())
+}
+
+/// Check if the program has been interrupted
+fn check_interrupted() -> bool {
+    INTERRUPTED.load(Ordering::SeqCst)
+}
+
+/// Write interruption marker to output
+fn write_interruption_marker(output: &mut OutputManager) -> Result<(), JtraceError> {
+    output_writeln!(output, "\n=== ANALYSIS INTERRUPTED ===")?;
+    output_writeln!(
+        output,
+        "Timestamp: {}",
+        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+    )?;
+    output_writeln!(output, "Results above are partial and may be incomplete.")?;
+    Ok(())
+}
+
+/// Centralized error handling for output operations
+///
+/// Provides consistent error reporting with context about the output destination
+/// and information about partial results when errors occur.
+fn handle_output_error(error: &Report<JtraceError>, output_file: Option<&std::path::PathBuf>) {
+    match output_file {
+        Some(path) => {
+            eprintln!(
+                "Error writing to output file '{}': {}",
+                path.display(),
+                error
+            );
+            eprintln!("Results may be incomplete or corrupted.");
+            eprintln!("Check file permissions and available disk space.");
+        }
+        None => {
+            eprintln!("Error writing to stdout: {}", error);
+            eprintln!("Output may be incomplete.");
+        }
+    }
+}
+
+/// Helper function for handling file operations with comprehensive error mapping
+fn handle_file_operation<T, F>(
+    operation: &str,
+    path: &std::path::PathBuf,
+    f: F,
+) -> Result<T, JtraceError>
+where
+    F: FnOnce() -> std::io::Result<T>,
+{
+    f().map_err(|e| {
+        let error_msg = match e.kind() {
+            std::io::ErrorKind::NotFound => "File or directory not found".to_string(),
+            std::io::ErrorKind::PermissionDenied => {
+                "Permission denied - check file/directory permissions".to_string()
+            }
+            std::io::ErrorKind::AlreadyExists => "File already exists".to_string(),
+            std::io::ErrorKind::InvalidInput => "Invalid file path or name".to_string(),
+            std::io::ErrorKind::WriteZero => "Failed to write data - disk may be full".to_string(),
+            std::io::ErrorKind::Interrupted => "Operation was interrupted".to_string(),
+            std::io::ErrorKind::UnexpectedEof => "Unexpected end of file".to_string(),
+            std::io::ErrorKind::OutOfMemory => "Out of memory".to_string(),
+            _ => format!("I/O error: {}", e),
+        };
+
+        Report::new(JtraceError::FileError {
+            path: path.clone(),
+            operation: operation.to_string(),
+            source: error_msg,
+        })
+    })
 }
 
 fn main() -> Result<(), JtraceError> {
@@ -1096,6 +1480,23 @@ fn main() -> Result<(), JtraceError> {
 
     bump_memlock_rlimit();
     set_print(Some((PrintLevel::Debug, print_to_log)));
+
+    // Signal handlers will be set up later in main after creating the running flag
+
+    // Create output manager for file or stdout output
+    let mut output_manager = OutputManager::new(cli.output_file.clone())?;
+
+    // Show progress messages only when outputting to stdout
+    let show_progress = cli.output_file.is_none();
+
+    if show_progress {
+        println!("Starting malloc_free analysis...");
+    } else {
+        jinfo!(
+            "Output will be saved to: {}",
+            cli.output_file.as_ref().unwrap().display()
+        );
+    }
 
     // Validate configuration parameters
     if cli.max_stack_depth > 128 {
@@ -1322,8 +1723,11 @@ fn main() -> Result<(), JtraceError> {
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
 
+    // Update signal handler to handle both running flag and interruption flag
     ctrlc::set_handler(move || {
+        INTERRUPTED.store(true, Ordering::SeqCst);
         r.store(false, Ordering::Release);
+        eprintln!("\nReceived interrupt signal. Cleaning up...");
     })
     .map_err(|_| Report::new(JtraceError::UnExpected))?;
 
@@ -1356,11 +1760,31 @@ fn main() -> Result<(), JtraceError> {
     println!();
 
     if cli.show_stats {
-        print_statistics(&cli, &mut skel.maps())?;
-        println!();
+        print_statistics(&cli, &mut skel.maps(), &mut output_manager)?;
+        output_writeln!(output_manager, "")?;
     }
 
-    process_events(&cli, &mut skel.maps())
+    let result = process_events(&cli, &mut skel.maps(), &mut output_manager);
+
+    // Handle any output errors from processing
+    if let Err(ref error) = result {
+        handle_output_error(error, cli.output_file.as_ref());
+    }
+
+    // Ensure final flush
+    if let Err(ref flush_error) = output_manager.flush() {
+        handle_output_error(flush_error, cli.output_file.as_ref());
+        jwarn!("Failed to flush output: {}", flush_error);
+    }
+
+    if show_progress {
+        match &cli.output_file {
+            Some(path) => println!("Results saved to: {}", path.display()),
+            None => {} // Already printed to stdout
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]
