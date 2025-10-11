@@ -177,6 +177,7 @@ fn main() {
         "bash_readline",
         "malloc_free",
         "packet_count",
+        "segfault_analyzer",
     ];
     let out_dir = env::var("OUT_DIR").unwrap();
     jinfo!("{}", out_dir);
