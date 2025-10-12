@@ -18,6 +18,7 @@ The following tracing tools are included:
 *   **`bash_readline`**: Trace commands executed in `bash`.
 *   **`malloc_free`**: Trace `malloc()` and `free()` calls to debug memory usage.
 *   **`packet_count`**: Count network packets on a specified interface.
+*   **`segfault_analyzer`**: Monitor and analyze segmentation faults with detailed fault information, stack traces, and register states.
 
 ## Prerequisites
 

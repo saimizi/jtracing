@@ -37,7 +37,7 @@ use {
 };
 
 use {
-    object::{Object, ObjectSymbol},
+    object::{Object, ObjectSegment, ObjectSymbol},
     regex::Regex,
     std::{
         collections::HashMap,
@@ -876,6 +876,55 @@ impl ElfFile {
 
         self.sym_addr.iter().for_each(|entry| result.push(entry.1));
         result
+    }
+
+    /// Gets the text segment base address from the ELF file.
+    ///
+    /// This method parses the ELF program headers to find the first LOAD segment
+    /// with executable permissions, which typically contains the .text section.
+    ///
+    /// # Returns
+    ///
+    /// The virtual address where the text segment is loaded, or `None` if no
+    /// executable LOAD segment is found.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SymbolAnalyzerError::InvalidElfFile`] if the file cannot be parsed.
+    pub fn get_text_base_address(&self) -> Result<Option<u64>, SymbolAnalyzerError> {
+        let fpathbuf = Path::new(&self.name)
+            .canonicalize()
+            .map_err(|_| Report::new(SymbolAnalyzerError::InvalidElfFile))
+            .attach_printable(format!("Invalid file path: {}", self.name))?;
+
+        let file = fs::File::open(&fpathbuf)
+            .map_err(|_| Report::new(SymbolAnalyzerError::InvalidElfFile))
+            .attach_printable(format!("Failed to open {}", self.name))?;
+
+        let map = unsafe {
+            memmap::Mmap::map(&file)
+                .map_err(|_| Report::new(SymbolAnalyzerError::Unexpected))
+                .attach_printable(format!("Failed to map {}", self.name))?
+        };
+
+        let object = object::File::parse(&map[..])
+            .map_err(|_| Report::new(SymbolAnalyzerError::Unexpected))
+            .attach_printable(format!("Failed to parse {}", self.name))?;
+
+        // Look for the first LOAD segment with executable permissions
+        for segment in object.segments() {
+            // Check if this is a LOAD segment with executable permissions
+            if let object::SegmentFlags::Elf { p_flags } = segment.flags() {
+                // Check if segment has execute permission (PF_X = 1)
+                if (p_flags & 1) != 0 {
+                    // This is an executable segment, likely the text segment
+                    return Ok(Some(segment.address()));
+                }
+            }
+        }
+
+        // No executable LOAD segment found
+        Ok(None)
     }
 }
 
