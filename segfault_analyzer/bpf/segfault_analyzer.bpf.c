@@ -77,7 +77,7 @@ struct {
 } stats SEC(".maps");
 
 // Temporary storage for fault information
-struct fault_info {
+struct segfault_fault_info {
     u64 fault_addr;
     u64 instruction_ptr;
     u32 pid;
@@ -99,7 +99,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1024);
     __type(key, u32); // PID
-    __type(value, struct fault_info);
+    __type(value, struct segfault_fault_info);
 } fault_info_map SEC(".maps");
 
 // Per-CPU array to store fault_info temporarily (avoid stack overflow)
@@ -107,7 +107,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 1);
     __type(key, u32);
-    __type(value, struct fault_info);
+    __type(value, struct segfault_fault_info);
 } fault_info_heap SEC(".maps");
 
 // Statistics indices
@@ -429,7 +429,7 @@ int kprobe_force_sig_fault(struct pt_regs *ctx)
     
     // Use per-CPU array to avoid stack overflow
     u32 zero = 0;
-    struct fault_info *info = bpf_map_lookup_elem(&fault_info_heap, &zero);
+    struct segfault_fault_info *info = bpf_map_lookup_elem(&fault_info_heap, &zero);
     if (!info) {
         return 0;
     }
@@ -545,7 +545,7 @@ int trace_signal_deliver(struct trace_event_raw_signal_deliver *ctx)
     event->fault_code = ctx->code; // si_code from siginfo (SEGV_MAPERR, SEGV_ACCERR, etc.)
     
     // Try to get fault address and instruction pointer from stored fault info
-    struct fault_info *fault_info = bpf_map_lookup_elem(&fault_info_map, &pid);
+    struct segfault_fault_info *fault_info = bpf_map_lookup_elem(&fault_info_map, &pid);
     if (fault_info) {
         // Check if this fault info is recent (within 1 second)
         u64 time_diff = event->timestamp_ns - fault_info->timestamp_ns;
