@@ -665,6 +665,74 @@ impl ConsoleProcessor {
 
         result
     }
+
+    /// Resolve address with VMA fallback when symbol resolution fails
+    fn resolve_address_with_fallback(
+        &mut self,
+        pid: u32,
+        addr: u64,
+        vma_info: &Option<VmaInfo>,
+    ) -> String {
+        // Try normal symbol resolution first
+        if let Some(symbol) = self.resolve_address(pid, addr) {
+            return symbol;
+        }
+
+        // Fallback to VMA-based resolution
+        if let Some(vma) = vma_info {
+            return self.resolve_with_vma(addr, vma);
+        }
+
+        // Last resort: just the address
+        format!("0x{:016x}", addr)
+    }
+
+    /// Resolve address using VMA information to calculate offset in binary
+    fn resolve_with_vma(&self, addr: u64, vma: &VmaInfo) -> String {
+        // Validate that address is within VMA range
+        if addr < vma.start || addr >= vma.end {
+            return format!("0x{:016x} [addr_outside_vma]", addr);
+        }
+
+        let offset = addr - vma.start;
+
+        match &vma.mapping_name {
+            Some(binary_path) => {
+                // Extract just the filename for cleaner output
+                let filename = std::path::Path::new(binary_path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(binary_path);
+
+                format!("0x{:016x} <{}+0x{:x}>", addr, filename, offset)
+            }
+            None => {
+                // Anonymous mapping or no path available
+                format!("0x{:016x} <anon_mapping+0x{:x}>", addr, offset)
+            }
+        }
+    }
+
+    /// Find appropriate VMA info for a given address from stack trace
+    /// Since BPF only captures VMA for instruction pointer, we use heuristics for stack addresses
+    fn find_vma_for_stack_address<'a>(
+        &self,
+        addr: u64,
+        event: &'a SegfaultEvent,
+    ) -> Option<&'a VmaInfo> {
+        // For now, we'll use the instruction pointer's VMA as a fallback
+        // This works well for addresses in the same binary/library
+        if let Some(ref vma) = event.vma_info {
+            // Check if the stack address falls within the same VMA
+            if addr >= vma.start && addr < vma.end {
+                return Some(vma);
+            }
+        }
+
+        // TODO: Future enhancement could capture multiple VMA entries in BPF
+        // or use address range heuristics to determine likely VMA
+        None
+    }
 }
 
 impl EventProcessor for ConsoleProcessor {
@@ -694,15 +762,13 @@ impl EventProcessor for ConsoleProcessor {
 
         println!("  Fault Address: 0x{:016x}", event.fault_address);
 
-        // Display instruction pointer with symbol resolution
-        if let Some(symbol) = self.resolve_address(event.pid, event.instruction_pointer) {
-            println!(
-                "  Instruction:   0x{:016x} ({})",
-                event.instruction_pointer, symbol
-            );
-        } else {
-            println!("  Instruction:   0x{:016x}", event.instruction_pointer);
-        }
+        // Display instruction pointer with enhanced symbol resolution
+        let ip_symbol = self.resolve_address_with_fallback(
+            event.pid,
+            event.instruction_pointer,
+            &event.vma_info,
+        );
+        println!("  Instruction:   {}", ip_symbol);
 
         println!("  Fault Type:    {}", event.fault_type.as_str());
 
@@ -741,11 +807,12 @@ impl EventProcessor for ConsoleProcessor {
             if let Some(ref stack_trace) = event.stack_trace {
                 println!("  \n  Stack Trace ({} frames):", stack_trace.len());
                 for (i, addr) in stack_trace.iter().enumerate() {
-                    if let Some(symbol) = self.resolve_address(event.pid, *addr) {
-                        println!("    #{:<2} 0x{:016x} {}", i, addr, symbol);
-                    } else {
-                        println!("    #{:<2} 0x{:016x}", i, addr);
-                    }
+                    // Try to find appropriate VMA for this stack address
+                    let vma_for_addr = self.find_vma_for_stack_address(*addr, event);
+                    let vma_option = vma_for_addr.cloned().or_else(|| event.vma_info.clone());
+
+                    let symbol = self.resolve_address_with_fallback(event.pid, *addr, &vma_option);
+                    println!("    #{:<2} {}", i, symbol);
                 }
             } else {
                 println!("  \n  Stack Trace: Not available");
@@ -912,6 +979,55 @@ impl JsonProcessor {
         result
     }
 
+    /// Resolve address with VMA fallback when symbol resolution fails
+    fn resolve_address_with_fallback(
+        &mut self,
+        pid: u32,
+        addr: u64,
+        vma_info: &Option<VmaInfo>,
+    ) -> Option<String> {
+        // Try normal symbol resolution first
+        if let Some(symbol) = self.resolve_address(pid, addr) {
+            return Some(symbol);
+        }
+
+        // Fallback to VMA-based resolution if symbols are enabled
+        if self.include_symbols {
+            if let Some(vma) = vma_info {
+                return Some(self.resolve_with_vma(addr, vma));
+            }
+        }
+
+        // No symbol resolution requested or no VMA info available
+        None
+    }
+
+    /// Resolve address using VMA information to calculate offset in binary
+    fn resolve_with_vma(&self, addr: u64, vma: &VmaInfo) -> String {
+        // Validate that address is within VMA range
+        if addr < vma.start || addr >= vma.end {
+            return format!("0x{:016x} [addr_outside_vma]", addr);
+        }
+
+        let offset = addr - vma.start;
+
+        match &vma.mapping_name {
+            Some(binary_path) => {
+                // Extract just the filename for cleaner output
+                let filename = std::path::Path::new(binary_path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(binary_path);
+
+                format!("{}+0x{:x}", filename, offset)
+            }
+            None => {
+                // Anonymous mapping or no path available
+                format!("anon_mapping+0x{:x}", offset)
+            }
+        }
+    }
+
     /// Create a JSON-serializable event with optional symbol resolution
     fn create_json_event(&mut self, event: &SegfaultEvent) -> JsonSegfaultEvent {
         let timestamp_ms = event
@@ -920,12 +1036,12 @@ impl JsonProcessor {
             .unwrap_or_default()
             .as_millis() as u64;
 
-        // Resolve instruction pointer symbol
-        let instruction_symbol = if self.include_symbols {
-            self.resolve_address(event.pid, event.instruction_pointer)
-        } else {
-            None
-        };
+        // Resolve instruction pointer symbol with VMA fallback
+        let instruction_symbol = self.resolve_address_with_fallback(
+            event.pid,
+            event.instruction_pointer,
+            &event.vma_info,
+        );
 
         // Resolve stack trace symbols
         let stack_trace = if let Some(ref stack_addrs) = event.stack_trace {
@@ -933,11 +1049,8 @@ impl JsonProcessor {
                 .iter()
                 .enumerate()
                 .map(|(i, &addr)| {
-                    let symbol = if self.include_symbols {
-                        self.resolve_address(event.pid, addr)
-                    } else {
-                        None
-                    };
+                    let symbol =
+                        self.resolve_address_with_fallback(event.pid, addr, &event.vma_info);
 
                     JsonStackFrame {
                         frame: i,
