@@ -117,6 +117,7 @@ jobs:
           malloc_free \
           profile \
           opensnoop \
+          segfault_analyzer \
           packet_count
     
     - name: Upload binary archive
@@ -163,7 +164,7 @@ jobs:
         mkdir -p ${PKG_DIR}/usr/share/doc/jtracing
         
         # Copy binaries
-        cp bash_readline eglswapbuffers execsnoop_pb execsnoop_rb funccount malloc_free profile opensnoop packet_count ${PKG_DIR}/usr/bin/
+        cp bash_readline eglswapbuffers execsnoop_pb execsnoop_rb funccount malloc_free profile opensnoop packet_count segfault_analyzer ${PKG_DIR}/usr/bin/
         
         # Create control file
         cat > ${PKG_DIR}/DEBIAN/control << EOF
