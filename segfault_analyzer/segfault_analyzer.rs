@@ -620,15 +620,28 @@ impl ConsoleProcessor {
 
         let result = if let Some(ref mut exec_map) = self.exec_map {
             match exec_map.symbol(addr) {
-                Ok((offset, symbol, module)) => {
+                Ok((vma_offset, symbol, module)) => {
+                    // Convert VMA offset to file offset for accurate symbol resolution
+                    let file_offset = self.calculate_file_offset(vma_offset, &module);
+
                     if !symbol.is_empty() {
                         if !module.is_empty() {
-                            Some(format!("{}+0x{:x} ({})", symbol, offset, module))
+                            // Extract just the filename for cleaner output
+                            let filename = std::path::Path::new(&module)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(&module);
+                            Some(format!("{}+0x{:x} ({})", symbol, file_offset, filename))
                         } else {
-                            Some(format!("{}+0x{:x}", symbol, offset))
+                            Some(format!("{}+0x{:x}", symbol, file_offset))
                         }
                     } else if !module.is_empty() {
-                        Some(format!("<{}+0x{:x}>", module, offset))
+                        // Extract just the filename for cleaner output
+                        let filename = std::path::Path::new(&module)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(&module);
+                        Some(format!("<{}+0x{:x}>", filename, file_offset))
                     } else {
                         None
                     }
@@ -687,6 +700,47 @@ impl ConsoleProcessor {
         format!("0x{:016x}", addr)
     }
 
+    /// Calculate file offset from VMA offset using ELF parsing
+    fn calculate_file_offset(&self, vma_offset: u64, binary_path: &str) -> u64 {
+        // Try to get the actual text segment base address from the ELF file
+        match tracelib::ElfFile::new(binary_path) {
+            Ok(elf_file) => {
+                match elf_file.get_text_base_address() {
+                    Ok(Some(text_base)) => {
+                        // Add the actual ELF text segment base address
+                        vma_offset + text_base
+                    }
+                    Ok(None) => {
+                        // No text segment found, use VMA offset as-is
+                        jtrace!("No executable segment found in {}", binary_path);
+                        vma_offset
+                    }
+                    Err(e) => {
+                        // ELF parsing failed, fall back to heuristic
+                        jtrace!("Failed to get text base for {}: {}", binary_path, e);
+                        self.calculate_file_offset_fallback(vma_offset, binary_path)
+                    }
+                }
+            }
+            Err(e) => {
+                // ELF file creation failed, fall back to heuristic
+                jtrace!("Failed to open ELF file {}: {}", binary_path, e);
+                self.calculate_file_offset_fallback(vma_offset, binary_path)
+            }
+        }
+    }
+
+    /// Fallback file offset calculation using heuristics
+    fn calculate_file_offset_fallback(&self, vma_offset: u64, binary_path: &str) -> u64 {
+        if binary_path.contains(".so") {
+            // For shared libraries, VMA offset often matches file offset
+            vma_offset
+        } else {
+            // For executables, use common ELF text base (0x1000) as fallback
+            vma_offset + 0x1000
+        }
+    }
+
     /// Resolve address using VMA information to calculate offset in binary
     fn resolve_with_vma(&self, addr: u64, vma: &VmaInfo) -> String {
         // Validate that address is within VMA range
@@ -694,21 +748,24 @@ impl ConsoleProcessor {
             return format!("0x{:016x} [addr_outside_vma]", addr);
         }
 
-        let offset = addr - vma.start;
+        let vma_offset = addr - vma.start;
 
         match &vma.mapping_name {
             Some(binary_path) => {
+                // Calculate the file offset that matches objdump/addr2line
+                let file_offset = self.calculate_file_offset(vma_offset, binary_path);
+
                 // Extract just the filename for cleaner output
                 let filename = std::path::Path::new(binary_path)
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or(binary_path);
 
-                format!("0x{:016x} <{}+0x{:x}>", addr, filename, offset)
+                format!("0x{:016x} <{}+0x{:x}>", addr, filename, file_offset)
             }
             None => {
                 // Anonymous mapping or no path available
-                format!("0x{:016x} <anon_mapping+0x{:x}>", addr, offset)
+                format!("0x{:016x} <anon_mapping+0x{:x}>", addr, vma_offset)
             }
         }
     }
@@ -933,15 +990,28 @@ impl JsonProcessor {
 
         let result = if let Some(ref mut exec_map) = self.exec_map {
             match exec_map.symbol(addr) {
-                Ok((offset, symbol, module)) => {
+                Ok((vma_offset, symbol, module)) => {
+                    // Convert VMA offset to file offset for accurate symbol resolution
+                    let file_offset = self.calculate_file_offset(vma_offset, &module);
+
                     if !symbol.is_empty() {
                         if !module.is_empty() {
-                            Some(format!("{}+0x{:x} ({})", symbol, offset, module))
+                            // Extract just the filename for cleaner output
+                            let filename = std::path::Path::new(&module)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(&module);
+                            Some(format!("{}+0x{:x} ({})", symbol, file_offset, filename))
                         } else {
-                            Some(format!("{}+0x{:x}", symbol, offset))
+                            Some(format!("{}+0x{:x}", symbol, file_offset))
                         }
                     } else if !module.is_empty() {
-                        Some(format!("<{}+0x{:x}>", module, offset))
+                        // Extract just the filename for cleaner output
+                        let filename = std::path::Path::new(&module)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(&module);
+                        Some(format!("<{}+0x{:x}>", filename, file_offset))
                     } else {
                         None
                     }
@@ -1002,6 +1072,47 @@ impl JsonProcessor {
         None
     }
 
+    /// Calculate file offset from VMA offset using ELF parsing
+    fn calculate_file_offset(&self, vma_offset: u64, binary_path: &str) -> u64 {
+        // Try to get the actual text segment base address from the ELF file
+        match tracelib::ElfFile::new(binary_path) {
+            Ok(elf_file) => {
+                match elf_file.get_text_base_address() {
+                    Ok(Some(text_base)) => {
+                        // Add the actual ELF text segment base address
+                        vma_offset + text_base
+                    }
+                    Ok(None) => {
+                        // No text segment found, use VMA offset as-is
+                        jtrace!("No executable segment found in {}", binary_path);
+                        vma_offset
+                    }
+                    Err(e) => {
+                        // ELF parsing failed, fall back to heuristic
+                        jtrace!("Failed to get text base for {}: {}", binary_path, e);
+                        self.calculate_file_offset_fallback(vma_offset, binary_path)
+                    }
+                }
+            }
+            Err(e) => {
+                // ELF file creation failed, fall back to heuristic
+                jtrace!("Failed to open ELF file {}: {}", binary_path, e);
+                self.calculate_file_offset_fallback(vma_offset, binary_path)
+            }
+        }
+    }
+
+    /// Fallback file offset calculation using heuristics
+    fn calculate_file_offset_fallback(&self, vma_offset: u64, binary_path: &str) -> u64 {
+        if binary_path.contains(".so") {
+            // For shared libraries, VMA offset often matches file offset
+            vma_offset
+        } else {
+            // For executables, use common ELF text base (0x1000) as fallback
+            vma_offset + 0x1000
+        }
+    }
+
     /// Resolve address using VMA information to calculate offset in binary
     fn resolve_with_vma(&self, addr: u64, vma: &VmaInfo) -> String {
         // Validate that address is within VMA range
@@ -1009,21 +1120,24 @@ impl JsonProcessor {
             return format!("0x{:016x} [addr_outside_vma]", addr);
         }
 
-        let offset = addr - vma.start;
+        let vma_offset = addr - vma.start;
 
         match &vma.mapping_name {
             Some(binary_path) => {
+                // Calculate the file offset that matches objdump/addr2line
+                let file_offset = self.calculate_file_offset(vma_offset, binary_path);
+
                 // Extract just the filename for cleaner output
                 let filename = std::path::Path::new(binary_path)
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or(binary_path);
 
-                format!("{}+0x{:x}", filename, offset)
+                format!("{}+0x{:x}", filename, file_offset)
             }
             None => {
                 // Anonymous mapping or no path available
-                format!("anon_mapping+0x{:x}", offset)
+                format!("anon_mapping+0x{:x}", vma_offset)
             }
         }
     }
