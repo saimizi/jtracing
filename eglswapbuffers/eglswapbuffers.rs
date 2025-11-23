@@ -140,7 +140,7 @@ fn process_events(
         }
     }
 
-    for (_, ((pid, tgid, comm_bytes), count_vec)) in hash_result.iter_mut().enumerate() {
+    for ((pid, tgid, comm_bytes), count_vec) in hash_result.iter_mut() {
         let comm = unsafe { bytes_to_string(comm_bytes.as_ptr()) };
         println!();
         println!("Probe: {}", probe);
@@ -157,7 +157,7 @@ fn process_events(
                 }
             }
 
-            for (_i, v) in count_vec.iter().enumerate() {
+            for v in count_vec.iter() {
                 print!("{:8}ms {:5}|", v.duration_ms, v.count);
                 println!("{}", "*".repeat((v.count * 60 / max_count) as usize));
             }

@@ -628,16 +628,20 @@ fn main() -> Result<(), FuncCountError> {
                 .attach_printable("No symbol found");
         }
 
+        let trace_regex =
+            Regex::new(r"t:(.+):(.+)").map_err(|_| Report::new(FuncCountError::Unexpected))?;
+        let uprobe_regex =
+            Regex::new(r"u:(.+):(.+)").map_err(|_| Report::new(FuncCountError::Unexpected))?;
+        let kprobe_regex =
+            Regex::new(r"(k:)*(.+)").map_err(|_| Report::new(FuncCountError::Unexpected))?;
+
         for arg in sym_to_trace {
             let mut processed = false;
 
             jdebug!("arg: {}", arg);
 
-            let tre =
-                Regex::new(r"t:(.+):(.+)").map_err(|_| Report::new(FuncCountError::Unexpected))?;
-
-            if tre.is_match(arg) {
-                for g in tre.captures_iter(arg) {
+            if trace_regex.is_match(arg) {
+                for g in trace_regex.captures_iter(arg) {
                     let pattern = format!("^{}:{}$", &g[1], &g[2]);
                     let re = Regex::new(&pattern)
                         .map_err(|_| Report::new(FuncCountError::Unexpected))?;
@@ -688,11 +692,8 @@ fn main() -> Result<(), FuncCountError> {
                 }
             }
 
-            let tre =
-                Regex::new(r"u:(.+):(.+)").map_err(|_| Report::new(FuncCountError::Unexpected))?;
-
-            if tre.is_match(arg) {
-                for g in tre.captures_iter(arg) {
+            if uprobe_regex.is_match(arg) {
+                for g in uprobe_regex.captures_iter(arg) {
                     let file = &g[1];
                     let elf =
                         ElfFile::new(file).change_context(FuncCountError::SymbolAnalyzerError)?;
@@ -750,11 +751,8 @@ fn main() -> Result<(), FuncCountError> {
                 continue;
             }
 
-            let tre =
-                Regex::new(r"(k:)*(.+)").map_err(|_| Report::new(FuncCountError::Unexpected))?;
-
-            if tre.is_match(arg) {
-                for g in tre.captures_iter(arg) {
+            if kprobe_regex.is_match(arg) {
+                for g in kprobe_regex.captures_iter(arg) {
                     let mut func_names = vec![];
                     let pattern = format!("^{}$", &g[2]);
                     let re = Regex::new(&pattern)

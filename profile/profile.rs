@@ -276,6 +276,7 @@ pub fn process_data(
         output_file = Some(BufWriter::new(
             fs::OpenOptions::new()
                 .create(true)
+                .truncate(true)
                 .write(true)
                 .read(true)
                 .open(file_name)

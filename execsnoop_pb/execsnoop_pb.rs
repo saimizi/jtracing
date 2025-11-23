@@ -292,7 +292,9 @@ fn main() -> Result<(), JtraceError> {
             jdebug!(args_count = event.args_count);
             while parsed_cnt < event.args_count {
                 let p = &event.args[index..index + 16];
-                let arg = unsafe { bytes_to_string(std::mem::transmute(p.as_ptr())) };
+                let arg = unsafe {
+                    bytes_to_string(std::mem::transmute::<*const u8, *const i8>(p.as_ptr()))
+                };
                 arg_parsed.push(arg.clone());
 
                 jdebug!(parsed_cnt = parsed_cnt, index = index, arg = arg);
