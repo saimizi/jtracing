@@ -1,9 +1,7 @@
 #[allow(unused)]
 use {
     byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt},
-    chrono,
     clap::Parser,
-    ctrlc,
     error_stack::{Report, Result, ResultExt},
     jlogger_tracing::{
         jdebug, jerror, jinfo, jtrace, jwarn, JloggerBuilder, LevelFilter, LogTimeFormat,
@@ -99,6 +97,7 @@ macro_rules! output_writeln {
     };
 }
 
+#[allow(unused_macros)]
 macro_rules! output_write {
     ($output:expr, $($arg:tt)*) => {
         $output.write_formatted(format_args!($($arg)*))
@@ -459,7 +458,7 @@ fn calculate_process_statistics_from_records(
             // Calculate age information from the eBPF-maintained fields
             let oldest_age_str = if record.oldest_alloc_timestamp > 0 {
                 calculate_allocation_age(record.oldest_alloc_timestamp)
-                    .map(|age| format_age(age))
+                    .map(format_age)
                     .unwrap_or_else(|_| "unknown".to_string())
             } else {
                 "unknown".to_string()
@@ -469,7 +468,7 @@ fn calculate_process_statistics_from_records(
                 // Calculate average timestamp, then convert to age
                 let avg_timestamp = record.total_age_sum_ns / record.total_unfreed_count as u64;
                 calculate_allocation_age(avg_timestamp)
-                    .map(|age| format_age(age))
+                    .map(format_age)
                     .unwrap_or_else(|_| "unknown".to_string())
             } else {
                 "unknown".to_string()
@@ -584,14 +583,13 @@ fn find_libc_path_from_proc_maps() -> Option<String> {
     };
 
     let reader = BufReader::new(file);
-    for line in reader.lines() {
-        if let Ok(l) = line {
-            if l.contains("libc.so.6") && l.contains(".so") {
-                // Extract the path, which is usually the last part of the line after a space
-                if let Some(path_str) = l.split_whitespace().last() {
-                    jinfo!("Found libc.so.6 in proc maps: {}", path_str);
-                    return Some(path_str.to_string());
-                }
+    // Using map_while() to avoid endless loop on read errors
+    for line in reader.lines().map_while(|l| l.ok()) {
+        if line.contains("libc.so.6") && line.contains(".so") {
+            // Extract the path, which is usually the last part of the line after a space
+            if let Some(path_str) = line.split_whitespace().last() {
+                jinfo!("Found libc.so.6 in proc maps: {}", path_str);
+                return Some(path_str.to_string());
             }
         }
     }
@@ -749,6 +747,7 @@ struct Cli {
 use std::io::{BufWriter, Write};
 
 /// Trait for writing output to different destinations (stdout or file)
+#[allow(dead_code)]
 trait OutputWriter {
     fn write_line(&mut self, line: &str) -> Result<(), JtraceError>;
     fn write_formatted(&mut self, args: std::fmt::Arguments) -> Result<(), JtraceError>;
@@ -843,6 +842,7 @@ impl OutputManager {
         })
     }
 
+    #[allow(dead_code)]
     fn write_line(&mut self, line: &str) -> Result<(), JtraceError> {
         self.writer.write_line(line)
     }
@@ -1030,31 +1030,29 @@ fn process_events(
                         tid
                     )?;
                 }
+            } else if min_age_filter.is_some() {
+                output_writeln!(
+                    output,
+                    "{:<4} {:<8} {} malloc: {:<10}({}) free: {:<10}({})",
+                    idx,
+                    event.size,
+                    age_info,
+                    comm,
+                    tid,
+                    free_comm,
+                    free_tid
+                )?;
             } else {
-                if min_age_filter.is_some() {
-                    output_writeln!(
-                        output,
-                        "{:<4} {:<8} {} malloc: {:<10}({}) free: {:<10}({})",
-                        idx,
-                        event.size,
-                        age_info,
-                        comm,
-                        tid,
-                        free_comm,
-                        free_tid
-                    )?;
-                } else {
-                    output_writeln!(
-                        output,
-                        "{:<4} {:<8} malloc: {:<10}({}) free: {:<10}({})",
-                        idx,
-                        event.size,
-                        comm,
-                        tid,
-                        free_comm,
-                        free_tid
-                    )?;
-                }
+                output_writeln!(
+                    output,
+                    "{:<4} {:<8} malloc: {:<10}({}) free: {:<10}({})",
+                    idx,
+                    event.size,
+                    comm,
+                    tid,
+                    free_comm,
+                    free_tid
+                )?;
             }
             idx += 1;
 
@@ -1285,12 +1283,12 @@ fn print_statistics(
     output_writeln!(output, "\n=== Statistics ===")?;
 
     // Read statistics from all CPUs and sum them up (expanded for age statistics)
-    let mut stats_totals = vec![0u64; 24]; // Increased from 20 to 24
+    let mut stats_totals = [0u64; 24]; // Increased from 20 to 24
     for cpu in 0..num_cpus::get() {
         // Perform periodic flush during statistics collection
         output.flush_if_needed();
 
-        for stat_idx in 0..24 {
+        for (stat_idx, v) in stats_totals.iter_mut().enumerate() {
             // Increased from 20 to 24
             let key_bytes = (stat_idx as u32).to_ne_bytes();
             if let Some(data) = stats_map
@@ -1304,7 +1302,7 @@ fn print_statistics(
                         cursor.set_position(0);
                         value = cursor.read_u64::<NativeEndian>().unwrap_or(0);
                     }
-                    stats_totals[stat_idx] += value;
+                    *v += value;
                 }
             }
         }
@@ -1442,11 +1440,7 @@ fn handle_output_error(error: &Report<JtraceError>, output_file: Option<&std::pa
 }
 
 /// Helper function for handling file operations with comprehensive error mapping
-fn handle_file_operation<T, F>(
-    operation: &str,
-    path: &std::path::PathBuf,
-    f: F,
-) -> Result<T, JtraceError>
+fn handle_file_operation<T, F>(operation: &str, path: &Path, f: F) -> Result<T, JtraceError>
 where
     F: FnOnce() -> std::io::Result<T>,
 {
@@ -1466,7 +1460,7 @@ where
         };
 
         Report::new(JtraceError::FileError {
-            path: path.clone(),
+            path: path.to_path_buf(),
             operation: operation.to_string(),
             source: error_msg,
         })

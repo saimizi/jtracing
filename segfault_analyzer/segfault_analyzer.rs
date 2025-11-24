@@ -1,7 +1,6 @@
 #[allow(unused)]
 use {
     clap::Parser,
-    ctrlc,
     error_stack::{Report, Result, ResultExt},
     jlogger_tracing::{jdebug, jerror, jinfo, jtrace, jwarn, JloggerBuilder, LevelFilter},
     libbpf_rs::{
@@ -17,7 +16,7 @@ use {
         path::PathBuf,
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc,
+            Arc, Mutex,
         },
         time::{Duration, SystemTime, UNIX_EPOCH},
     },
@@ -250,6 +249,12 @@ pub struct StatisticsManager {
     userspace_stats: SegfaultStatistics,
     last_display_time: SystemTime,
     start_time: SystemTime,
+}
+
+impl Default for StatisticsManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StatisticsManager {
@@ -613,7 +618,7 @@ impl ConsoleProcessor {
         }
 
         // Ensure we have an exec map for this PID
-        if let Err(_) = self.ensure_exec_map(pid) {
+        if self.ensure_exec_map(pid).is_err() {
             self.symbol_cache.insert(addr, None);
             return None;
         }
@@ -983,7 +988,7 @@ impl JsonProcessor {
         }
 
         // Ensure we have an exec map for this PID
-        if let Err(_) = self.ensure_exec_map(pid) {
+        if self.ensure_exec_map(pid).is_err() {
             self.symbol_cache.insert(addr, None);
             return None;
         }
@@ -1767,14 +1772,14 @@ static mut EVENT_PROCESSOR: Option<Box<dyn EventProcessor>> = None;
 static mut PROCESS_NAME_FILTER: Option<String> = None;
 
 /// Global event statistics
-static mut EVENT_STATS: EventStats = EventStats {
+static EVENT_STATS: Mutex<EventStats> = Mutex::new(EventStats {
     events_received: 0,
     events_parsed: 0,
     events_processed: 0,
     events_filtered_name: 0,
     parse_errors: 0,
     process_errors: 0,
-};
+});
 
 /// Event processing statistics
 #[derive(Debug)]
@@ -1785,6 +1790,54 @@ struct EventStats {
     events_filtered_name: u64,
     parse_errors: u64,
     process_errors: u64,
+}
+
+fn events_received() -> u64 {
+    EVENT_STATS.lock().unwrap().events_received
+}
+
+fn events_parsed() -> u64 {
+    EVENT_STATS.lock().unwrap().events_parsed
+}
+
+fn events_processed() -> u64 {
+    EVENT_STATS.lock().unwrap().events_processed
+}
+
+fn events_filtered_name() -> u64 {
+    EVENT_STATS.lock().unwrap().events_filtered_name
+}
+
+fn events_parse_errors() -> u64 {
+    EVENT_STATS.lock().unwrap().parse_errors
+}
+
+fn events_process_errors() -> u64 {
+    EVENT_STATS.lock().unwrap().process_errors
+}
+
+fn increase_events_received() {
+    EVENT_STATS.lock().unwrap().events_received += 1;
+}
+
+fn increase_events_parsed() {
+    EVENT_STATS.lock().unwrap().events_parsed += 1;
+}
+
+fn increase_events_processed() {
+    EVENT_STATS.lock().unwrap().events_processed += 1;
+}
+
+fn increase_events_filtered_name() {
+    EVENT_STATS.lock().unwrap().events_filtered_name += 1;
+}
+
+fn increase_parse_errors() {
+    EVENT_STATS.lock().unwrap().parse_errors += 1;
+}
+
+fn increase_process_errors() {
+    EVENT_STATS.lock().unwrap().process_errors += 1;
 }
 
 /// Check if event should be filtered based on process name
@@ -1801,21 +1854,15 @@ fn should_filter_process_name(comm: &str) -> bool {
 
 /// Ring buffer event handler callback
 fn handle_event(data: &[u8]) -> i32 {
-    unsafe {
-        EVENT_STATS.events_received += 1;
-    }
+    increase_events_received();
 
     match parse_bpf_event(data) {
         Ok(event) => {
-            unsafe {
-                EVENT_STATS.events_parsed += 1;
-            }
+            increase_events_parsed();
 
             // Apply process name filter if specified
             if should_filter_process_name(&event.comm) {
-                unsafe {
-                    EVENT_STATS.events_filtered_name += 1;
-                }
+                increase_events_filtered_name();
                 jtrace!(
                     "Filtering out event for process '{}' (doesn't match filter)",
                     event.comm
@@ -1828,11 +1875,12 @@ fn handle_event(data: &[u8]) -> i32 {
                 if let Some(ref mut processor) = EVENT_PROCESSOR {
                     match processor.process_event(&event) {
                         Ok(()) => {
-                            EVENT_STATS.events_processed += 1;
+                            increase_events_processed();
                             0 // Success
                         }
                         Err(e) => {
-                            EVENT_STATS.process_errors += 1;
+                            increase_process_errors();
+
                             jerror!(
                                 "Failed to process segfault event for PID {}: {}",
                                 event.pid,
@@ -1848,9 +1896,7 @@ fn handle_event(data: &[u8]) -> i32 {
             }
         }
         Err(e) => {
-            unsafe {
-                EVENT_STATS.parse_errors += 1;
-            }
+            increase_parse_errors();
             jerror!(
                 "Failed to parse BPF event (size: {} bytes): {}",
                 data.len(),
@@ -1905,26 +1951,19 @@ fn print_statistics(skel: &SegfaultAnalyzerSkel) -> Result<(), JtraceError> {
 
     // Print userspace event processing statistics
     jinfo!("Userspace Processing Statistics:");
-    unsafe {
-        jinfo!("  Events received: {}", EVENT_STATS.events_received);
-        jinfo!("  Events parsed: {}", EVENT_STATS.events_parsed);
-        jinfo!("  Events processed: {}", EVENT_STATS.events_processed);
-        jinfo!(
-            "  Events filtered (name): {}",
-            EVENT_STATS.events_filtered_name
-        );
-        jinfo!("  Parse errors: {}", EVENT_STATS.parse_errors);
-        jinfo!("  Process errors: {}", EVENT_STATS.process_errors);
+    jinfo!("  Events received: {}", events_received());
+    jinfo!("  Events parsed: {}", events_parsed());
+    jinfo!("  Events processed: {}", events_processed());
+    jinfo!("  Events filtered (name): {}", events_filtered_name());
+    jinfo!("  Parse errors: {}", events_parse_errors());
+    jinfo!("  Process errors: {}", events_process_errors());
 
-        // Calculate success rates
-        if EVENT_STATS.events_received > 0 {
-            let parse_rate =
-                (EVENT_STATS.events_parsed as f64 / EVENT_STATS.events_received as f64) * 100.0;
-            let process_rate =
-                (EVENT_STATS.events_processed as f64 / EVENT_STATS.events_received as f64) * 100.0;
-            jinfo!("  Parse success rate: {:.1}%", parse_rate);
-            jinfo!("  Process success rate: {:.1}%", process_rate);
-        }
+    // Calculate success rates
+    if events_received() > 0 {
+        let parse_rate = (events_parsed() as f64 / events_received() as f64) * 100.0;
+        let process_rate = (events_processed() as f64 / events_received() as f64) * 100.0;
+        jinfo!("  Parse success rate: {:.1}%", parse_rate);
+        jinfo!("  Process success rate: {:.1}%", process_rate);
     }
 
     Ok(())
@@ -2127,16 +2166,17 @@ fn main() -> Result<(), JtraceError> {
         }
 
         // Print periodic statistics in verbose mode (legacy)
-        if cli.verbose && !cli.stats {
-            unsafe {
-                if EVENT_STATS.events_received > 0 {
-                    let elapsed_secs = start_time.elapsed().as_secs();
-                    if elapsed_secs > 0 && elapsed_secs % 30 == 0 {
-                        jinfo!("Periodic stats: {} events received, {} processed, {} filtered (name), {} errors",
-                               EVENT_STATS.events_received, EVENT_STATS.events_processed,
-                               EVENT_STATS.events_filtered_name, EVENT_STATS.parse_errors + EVENT_STATS.process_errors);
-                    }
-                }
+        if cli.verbose && !cli.stats && events_received() > 0 {
+            let elapsed_secs = start_time.elapsed().as_secs();
+            if elapsed_secs > 0 && elapsed_secs % 30 == 0 {
+                jinfo!(
+                    "Periodic stats: {} events received, {} processed, {} filtered (name), {}
+                    errors",
+                    events_received(),
+                    events_processed(),
+                    events_filtered_name(),
+                    events_parse_errors() + events_process_errors()
+                );
             }
         }
 

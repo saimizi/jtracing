@@ -298,14 +298,14 @@ impl KernelMap {
                 ktype,
                 name,
                 module,
-                len: u64::max_value(),
+                len: u64::MAX,
             });
         }
 
         /* Descending order */
         kallsyms.sort_by(|a, b| b.addr().partial_cmp(&a.addr()).unwrap());
 
-        let mut addr = u64::max_value();
+        let mut addr = u64::MAX;
 
         for v in kallsyms.iter_mut() {
             if addr >= v.addr() {

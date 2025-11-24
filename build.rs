@@ -168,7 +168,7 @@ fn main() {
         .log_console(false)
         .build();
 
-    let applications = vec![
+    let applications = [
         "execsnoop_pb",
         "execsnoop_rb",
         "funccount",
