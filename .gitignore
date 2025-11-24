@@ -3,7 +3,6 @@
 */bpf/vmlinux.h
 */bpf/*.skel.rs
 .aider.*
-Cargo.lock
 *.patch
 *.log
 .requirements/*
