@@ -68,8 +68,12 @@ pub struct SegfaultEvent {
     #[serde(with = "systemtime_serde")]
     pub timestamp: SystemTime,
 
+    // Event classification
+    pub signal_number: u32,    // SIGSEGV (11) or SIGABRT (6)
+    pub event_type: EventType, // Segfault or Abort
+
     // Fault details
-    pub fault_address: u64,
+    pub fault_address: u64, // Only meaningful for SIGSEGV
     pub instruction_pointer: u64,
     pub fault_type: FaultType,
 
@@ -78,23 +82,55 @@ pub struct SegfaultEvent {
 
     // Optional stack trace
     pub stack_trace: Option<Vec<u64>>,
+    pub stack_trace_reliable: bool, // False if stack may be corrupted
 
     // Memory mapping info
     pub vma_info: Option<VmaInfo>,
 }
 
+/// Event type classification
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum EventType {
+    Segfault, // SIGSEGV
+    Abort,    // SIGABRT (includes stack smashing)
+}
+
+impl EventType {
+    fn as_str(&self) -> &'static str {
+        match self {
+            EventType::Segfault => "SEGFAULT",
+            EventType::Abort => "ABORT",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FaultType {
-    MapError,     // SEGV_MAPERR - address not mapped
-    AccessError,  // SEGV_ACCERR - invalid permissions
+    // SIGSEGV types
+    MapError,    // SEGV_MAPERR - address not mapped
+    AccessError, // SEGV_ACCERR - invalid permissions
+
+    // SIGABRT type
+    Abort, // Abort signal (may include stack smashing)
+
     Unknown(i32), // Other si_code values
 }
 
 impl FaultType {
-    pub fn from_si_code(code: i32) -> Self {
-        match code {
-            1 => FaultType::MapError,    // SEGV_MAPERR
-            2 => FaultType::AccessError, // SEGV_ACCERR
+    pub fn from_si_code(code: i32, signal: u32) -> Self {
+        match signal {
+            11 => {
+                // SIGSEGV
+                match code {
+                    1 => FaultType::MapError,    // SEGV_MAPERR
+                    2 => FaultType::AccessError, // SEGV_ACCERR
+                    _ => FaultType::Unknown(code),
+                }
+            }
+            6 => {
+                // SIGABRT
+                FaultType::Abort
+            }
             _ => FaultType::Unknown(code),
         }
     }
@@ -103,6 +139,7 @@ impl FaultType {
         match self {
             FaultType::MapError => "Address not mapped (SEGV_MAPERR)",
             FaultType::AccessError => "Access violation (SEGV_ACCERR)",
+            FaultType::Abort => "Abort signal",
             FaultType::Unknown(_) => "Unknown fault type",
         }
     }
@@ -815,14 +852,18 @@ impl EventProcessor for ConsoleProcessor {
                 .unwrap_or_default();
 
         println!(
-            "[{}] SEGFAULT in process {} (PID: {}, TID: {})",
+            "[{}] {} in process {} (PID: {}, TID: {})",
             datetime.format("%Y-%m-%d %H:%M:%S%.3f"),
+            event.event_type.as_str(),
             event.comm,
             event.pid,
             event.tid
         );
 
-        println!("  Fault Address: 0x{:016x}", event.fault_address);
+        // Only show fault address for segfaults (not meaningful for SIGABRT)
+        if event.event_type == EventType::Segfault {
+            println!("  Fault Address: 0x{:016x}", event.fault_address);
+        }
 
         // Display instruction pointer with enhanced symbol resolution
         let ip_symbol = self.resolve_address_with_fallback(
@@ -867,7 +908,16 @@ impl EventProcessor for ConsoleProcessor {
 
         if self.show_stack_trace {
             if let Some(ref stack_trace) = event.stack_trace {
-                println!("  \n  Stack Trace ({} frames):", stack_trace.len());
+                // Add reliability warning for abort events with potentially corrupted stacks
+                if event.event_type == EventType::Abort && !event.stack_trace_reliable {
+                    println!(
+                        "  \n  Stack Trace ({} frames) - MAY BE UNRELIABLE DUE TO CORRUPTION:",
+                        stack_trace.len()
+                    );
+                } else {
+                    println!("  \n  Stack Trace ({} frames):", stack_trace.len());
+                }
+
                 for (i, addr) in stack_trace.iter().enumerate() {
                     // Try to find appropriate VMA for this stack address
                     let vma_for_addr = self.find_vma_for_stack_address(*addr, event);
@@ -1188,14 +1238,21 @@ impl JsonProcessor {
             pid: event.pid,
             tid: event.tid,
             comm: event.comm.clone(),
+            signal_number: event.signal_number,
+            event_type: match event.event_type {
+                EventType::Segfault => "segfault".to_string(),
+                EventType::Abort => "abort".to_string(),
+            },
             fault_address: format!("0x{:016x}", event.fault_address),
             instruction_pointer: format!("0x{:016x}", event.instruction_pointer),
             instruction_symbol,
             fault_type: match &event.fault_type {
                 FaultType::MapError => "map_error".to_string(),
                 FaultType::AccessError => "access_error".to_string(),
+                FaultType::Abort => "abort".to_string(),
                 FaultType::Unknown(code) => format!("unknown_{}", code),
             },
+            stack_trace_reliable: event.stack_trace_reliable,
             registers: event.registers.as_ref().map(|regs| JsonRegisterState {
                 architecture: regs.architecture.clone(),
                 registers: regs
@@ -1312,10 +1369,13 @@ pub struct JsonSegfaultEvent {
     pub pid: u32,
     pub tid: u32,
     pub comm: String,
+    pub signal_number: u32,
+    pub event_type: String,
     pub fault_address: String,
     pub instruction_pointer: String,
     pub instruction_symbol: Option<String>,
     pub fault_type: String,
+    pub stack_trace_reliable: bool,
     pub registers: Option<JsonRegisterState>,
     pub stack_trace: Option<Vec<JsonStackFrame>>,
     pub vma_info: Option<JsonVmaInfo>,
@@ -1475,17 +1535,21 @@ fn format_event_as_text(event: &SegfaultEvent) -> Result<String, JtraceError> {
             .unwrap_or_default();
 
     output.push_str(&format!(
-        "[{}] SEGFAULT in process {} (PID: {}, TID: {})\n",
+        "[{}] {} in process {} (PID: {}, TID: {})\n",
         datetime.format("%Y-%m-%d %H:%M:%S%.3f"),
+        event.event_type.as_str(),
         event.comm,
         event.pid,
         event.tid
     ));
 
-    output.push_str(&format!(
-        "  Fault Address: 0x{:016x}\n",
-        event.fault_address
-    ));
+    // Only show fault address for segfaults
+    if event.event_type == EventType::Segfault {
+        output.push_str(&format!(
+            "  Fault Address: 0x{:016x}\n",
+            event.fault_address
+        ));
+    }
     output.push_str(&format!(
         "  Instruction:   0x{:016x}\n",
         event.instruction_pointer
@@ -1526,14 +1590,21 @@ fn format_event_as_json(event: &SegfaultEvent) -> Result<String, JtraceError> {
         pid: event.pid,
         tid: event.tid,
         comm: event.comm.clone(),
+        signal_number: event.signal_number,
+        event_type: match event.event_type {
+            EventType::Segfault => "segfault".to_string(),
+            EventType::Abort => "abort".to_string(),
+        },
         fault_address: format!("0x{:016x}", event.fault_address),
         instruction_pointer: format!("0x{:016x}", event.instruction_pointer),
         instruction_symbol: None, // No symbol resolution for file output
         fault_type: match &event.fault_type {
             FaultType::MapError => "map_error".to_string(),
             FaultType::AccessError => "access_error".to_string(),
+            FaultType::Abort => "abort".to_string(),
             FaultType::Unknown(code) => format!("unknown_{}", code),
         },
+        stack_trace_reliable: event.stack_trace_reliable,
         registers: event.registers.as_ref().map(|regs| JsonRegisterState {
             architecture: regs.architecture.clone(),
             registers: regs
@@ -1566,6 +1637,18 @@ fn format_event_as_json(event: &SegfaultEvent) -> Result<String, JtraceError> {
             message: format!("Failed to serialize event to JSON: {}", e),
         })
     })
+}
+
+/// Classify SIGABRT event - simplified to just treat all as abort
+/// Users can identify stack smashing from the stack trace if needed
+fn classify_abort_event(
+    _stack_trace: &Option<Vec<u64>>,
+    _instruction_pointer: u64,
+    _pid: u32,
+) -> (EventType, FaultType) {
+    // All SIGABRT events are classified as abort
+    // Stack trace will show __stack_chk_fail if it's stack smashing
+    (EventType::Abort, FaultType::Abort)
 }
 
 /// Parse BPF event data into Rust SegfaultEvent structure
@@ -1604,7 +1687,10 @@ fn parse_bpf_event(data: &[u8]) -> Result<SegfaultEvent, JtraceError> {
     // Convert BPF event to Rust event
     let comm = unsafe { bytes_to_string(bpf_event.comm.as_ptr()) };
     let timestamp = SystemTime::UNIX_EPOCH + Duration::from_nanos(bpf_event.timestamp_ns);
-    let fault_type = FaultType::from_si_code(bpf_event.fault_code as i32);
+    let signal_number = bpf_event.signal_number;
+
+    // Stack trace reliability flag
+    let stack_trace_reliable = bpf_event.stack_reliable != 0;
 
     // Extract and validate stack trace if available
     let stack_trace = if bpf_event.stack_size > 0 {
@@ -1720,26 +1806,49 @@ fn parse_bpf_event(data: &[u8]) -> Result<SegfaultEvent, JtraceError> {
         None
     };
 
+    // Classify event type and fault type based on signal
+    let (event_type, fault_type) = if signal_number == 11 {
+        // SIGSEGV - segfault
+        (
+            EventType::Segfault,
+            FaultType::from_si_code(bpf_event.fault_code as i32, signal_number),
+        )
+    } else if signal_number == 6 {
+        // SIGABRT - abort (may include stack smashing, check stack trace)
+        (EventType::Abort, FaultType::Abort)
+    } else {
+        // Unknown signal
+        (
+            EventType::Segfault,
+            FaultType::from_si_code(bpf_event.fault_code as i32, signal_number),
+        )
+    };
+
     // Create and validate the final event
     let event = SegfaultEvent {
         pid: bpf_event.pid,
         tid: bpf_event.tid,
         comm,
         timestamp,
+        signal_number,
+        event_type,
         fault_address: bpf_event.fault_addr,
         instruction_pointer: bpf_event.instruction_ptr,
         fault_type,
         registers,
         stack_trace,
+        stack_trace_reliable,
         vma_info,
     };
 
     // Log event summary for debugging
     jtrace!(
-        "Parsed segfault event: PID={}, TID={}, comm='{}', fault_addr=0x{:x}, ip=0x{:x}, type={:?}",
+        "Parsed event: PID={}, TID={}, comm='{}', signal={}, type={:?}, fault_addr=0x{:x}, ip=0x{:x}, fault_type={:?}",
         event.pid,
         event.tid,
         event.comm,
+        event.signal_number,
+        event.event_type,
         event.fault_address,
         event.instruction_pointer,
         event.fault_type

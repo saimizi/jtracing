@@ -2,20 +2,29 @@
 
 ## Introduction
 
-This feature will create a BPF-based tool to analyze and debug segmentation faults in running processes. The tool will capture detailed information about segfault events, including memory access patterns, stack traces, register states, and process context to help developers identify the root cause of crashes.
+This feature will create a BPF-based tool to analyze and debug segmentation faults and stack smashing errors in running processes. The tool will capture detailed information about segfault events (SIGSEGV) and stack smashing detection events (SIGABRT from stack protector), including memory access patterns, stack traces, register states, and process context to help developers identify the root cause of crashes and buffer overflows.
+
+## Glossary
+
+- **SIGSEGV**: Segmentation fault signal (signal 11) triggered when a process attempts to access invalid memory
+- **SIGABRT**: Abort signal (signal 6) that can be triggered by various conditions including stack protector detection
+- **Stack Protector**: Compiler feature (`-fstack-protector-strong`) that detects stack buffer overflows by placing canary values on the stack
+- **Stack Smashing**: Buffer overflow that overwrites the stack, typically detected by stack protector mechanisms which then trigger SIGABRT
+- **Segfault Analyzer**: The BPF-based monitoring tool that captures and analyzes segmentation faults and abort signals
 
 ## Requirements
 
 ### Requirement 1
 
-**User Story:** As a developer, I want to monitor segmentation faults in real-time across all processes on the system, so that I can quickly identify when and where crashes occur.
+**User Story:** As a developer, I want to monitor segmentation faults and abort signals in real-time across all processes on the system, so that I can quickly identify when and where crashes occur.
 
 #### Acceptance Criteria
 
-1. WHEN a segmentation fault occurs in any process THEN the system SHALL capture the event with timestamp and process information
-2. WHEN monitoring is active THEN the system SHALL display segfault events in real-time
-3. WHEN a segfault is detected THEN the system SHALL record the process ID, process name, and command line arguments
-4. WHEN multiple segfaults occur THEN the system SHALL maintain a chronological log of all events
+1. WHEN a segmentation fault occurs in any process THEN the Segfault Analyzer SHALL capture the event with timestamp and process information
+2. WHEN an abort signal occurs in any process THEN the Segfault Analyzer SHALL capture the event with timestamp and process information
+3. WHEN monitoring is active THEN the Segfault Analyzer SHALL display segfault and abort events in real-time
+4. WHEN a segfault or abort is detected THEN the Segfault Analyzer SHALL record the process ID, process name, and command line arguments
+5. WHEN multiple events occur THEN the Segfault Analyzer SHALL maintain a chronological log of all events
 
 ### Requirement 2
 
@@ -74,11 +83,35 @@ This feature will create a BPF-based tool to analyze and debug segmentation faul
 
 ### Requirement 7
 
-**User Story:** As a developer, I want to save segfault analysis results to a file, so that I can review crashes that occurred when I wasn't actively monitoring.
+**User Story:** As a developer, I want to save segfault and abort signal analysis results to a file, so that I can review crashes that occurred when I wasn't actively monitoring.
 
 #### Acceptance Criteria
 
-1. WHEN an output file is specified THEN the system SHALL write all segfault events to the file
-2. WHEN writing to file THEN the system SHALL use a structured format (JSON or similar) for easy parsing
-3. WHEN the output file already exists THEN the system SHALL append new events rather than overwrite
-4. IF file writing fails THEN the system SHALL continue monitoring and display an error message
+1. WHEN an output file is specified THEN the Segfault Analyzer SHALL write all segfault and abort events to the file
+2. WHEN writing to file THEN the Segfault Analyzer SHALL use a structured format (JSON or similar) for easy parsing
+3. WHEN the output file already exists THEN the Segfault Analyzer SHALL append new events rather than overwrite
+4. IF file writing fails THEN the Segfault Analyzer SHALL continue monitoring and display an error message
+
+### Requirement 8
+
+**User Story:** As a developer, I want to distinguish between different types of crashes, so that I can quickly identify whether an issue is a segmentation fault or an abort signal.
+
+#### Acceptance Criteria
+
+1. WHEN a SIGSEGV signal is captured THEN the Segfault Analyzer SHALL classify the event as a segmentation fault
+2. WHEN a SIGABRT signal is captured THEN the Segfault Analyzer SHALL classify the event as an abort
+3. WHEN displaying events THEN the Segfault Analyzer SHALL clearly indicate the event type (segmentation fault or abort)
+4. WHEN displaying abort events THEN the Segfault Analyzer SHALL include the stack trace to allow identification of the abort cause
+
+### Requirement 9
+
+**User Story:** As a developer, I want to see detailed diagnostic information for abort signals, so that I can identify the cause of the abort including stack smashing errors.
+
+#### Acceptance Criteria
+
+1. WHEN an abort signal occurs THEN the Segfault Analyzer SHALL attempt to capture the stack trace showing the call chain
+2. WHEN an abort signal occurs THEN the Segfault Analyzer SHALL capture the register state at the time of detection
+3. WHEN an abort signal occurs THEN the Segfault Analyzer SHALL capture the instruction pointer and VMA information
+4. WHEN stack unwinding fails due to corruption THEN the Segfault Analyzer SHALL provide the instruction pointer and register state as fallback information
+5. WHEN stack trace is available THEN the Segfault Analyzer SHALL display function names with offsets to help identify the abort cause
+6. WHEN displaying abort events THEN the Segfault Analyzer SHALL indicate if the stack trace may be unreliable due to corruption

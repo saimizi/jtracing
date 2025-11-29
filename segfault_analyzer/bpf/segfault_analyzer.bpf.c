@@ -23,12 +23,18 @@
 #define PERF_MAX_STACK_DEPTH 128
 #endif
 
-// Segfault signal number
-#define SIGSEGV 11
+// Signal numbers
+#define SIGABRT 6 // Abort signal
+#define SIGSEGV 11 // Segmentation fault
 
 // si_code values for SIGSEGV
 #define SEGV_MAPERR 1 // Address not mapped to object
 #define SEGV_ACCERR 2 // Invalid permissions for mapped object
+
+// Event type classification
+#define EVENT_TYPE_SEGFAULT 0
+#define EVENT_TYPE_STACK_SMASHING 1
+#define EVENT_TYPE_GENERIC_ABORT 2
 
 // Max path length for VMA file path
 #ifndef VMA_PATH_MAX
@@ -46,10 +52,14 @@ struct segfault_event {
 	char comm[TASK_COMM_LEN];
 	u64 timestamp_ns;
 
+	// Event classification
+	u32 signal_number; // SIGSEGV (11) or SIGABRT (6)
+	u32 event_type; // 0=segfault, 1=stack_smashing, 2=generic_abort
+
 	// Fault information
-	u64 fault_addr; // Address that caused the fault
+	u64 fault_addr; // Address that caused the fault (SIGSEGV only)
 	u64 instruction_ptr; // RIP/PC at time of fault
-	u32 fault_code; // si_code from siginfo (SEGV_MAPERR, SEGV_ACCERR)
+	u32 fault_code; // si_code from siginfo
 
 	// Register state (architecture-specific)
 	u64 registers[16]; // Key CPU registers
@@ -58,6 +68,7 @@ struct segfault_event {
 	// Stack trace
 	u64 stack_trace[PERF_MAX_STACK_DEPTH];
 	s32 stack_size; // Number of stack frames captured
+	u8 stack_reliable; // 0=unreliable (corrupted), 1=reliable
 
 	// Memory mapping context for instruction pointer
 	u64 vma_start; // Start of VMA containing instruction pointer
@@ -579,8 +590,8 @@ int kprobe_force_sig_fault(struct pt_regs *ctx)
 	int code = (int)PT_REGS_PARM2(ctx);
 	void *addr = (void *)PT_REGS_PARM3(ctx);
 
-	// Only process SIGSEGV
-	if (sig != SIGSEGV) {
+	// Only process SIGSEGV and SIGABRT
+	if (sig != SIGSEGV && sig != SIGABRT) {
 		return 0;
 	}
 
@@ -652,8 +663,8 @@ int trace_signal_deliver(struct trace_event_raw_signal_deliver *ctx)
 	u32 pid = id >> 32;
 	u32 tid = (u32)id;
 
-	// Only process SIGSEGV signals
-	if (ctx->sig != SIGSEGV) {
+	// Only process SIGSEGV and SIGABRT signals
+	if (ctx->sig != SIGSEGV && ctx->sig != SIGABRT) {
 		return 0;
 	}
 
@@ -677,11 +688,14 @@ int trace_signal_deliver(struct trace_event_raw_signal_deliver *ctx)
 	event->pid = 0;
 	event->tid = 0;
 	event->timestamp_ns = 0;
+	event->signal_number = 0;
+	event->event_type = 0;
 	event->fault_addr = 0;
 	event->instruction_ptr = 0;
 	event->fault_code = 0;
 	event->register_count = 0;
 	event->stack_size = 0;
+	event->stack_reliable = 1; // Assume reliable by default
 	event->vma_start = 0;
 	event->vma_end = 0;
 	event->vma_flags = 0;
@@ -701,6 +715,19 @@ int trace_signal_deliver(struct trace_event_raw_signal_deliver *ctx)
 	event->tid = tid;
 	event->timestamp_ns = bpf_ktime_get_ns();
 	bpf_get_current_comm(event->comm, sizeof(event->comm));
+
+	// Set signal number
+	event->signal_number = ctx->sig;
+
+	// Initial event type classification (will be refined in userspace for SIGABRT)
+	if (ctx->sig == SIGSEGV) {
+		event->event_type = EVENT_TYPE_SEGFAULT;
+		event->stack_reliable = 1; // Stack is reliable for segfaults
+	} else if (ctx->sig == SIGABRT) {
+		// Default to generic abort, will be refined in userspace
+		event->event_type = EVENT_TYPE_GENERIC_ABORT;
+		event->stack_reliable = 0; // Stack may be corrupted for aborts
+	}
 
 	// Extract fault information from signal_deliver tracepoint
 	event->fault_code =
@@ -749,6 +776,36 @@ int trace_signal_deliver(struct trace_event_raw_signal_deliver *ctx)
 		bpf_map_delete_elem(&fault_info_map, &pid);
 	} else {
 		increment_stat(STAT_FAULT_INFO_MISSED);
+
+		// For SIGABRT, capture stack trace directly here since force_sig_fault won't be called
+		if (ctx->sig == SIGABRT) {
+			// Capture stack trace directly
+			event->stack_size = capture_stack_trace(
+				ctx, event->stack_trace, max_stack_depth);
+			if (event->stack_size == 0) {
+				increment_stat(STAT_STACK_FAILURES);
+			}
+
+			// Use the first stack frame as the instruction pointer
+			if (event->stack_size > 0) {
+				event->instruction_ptr = event->stack_trace[0];
+			}
+
+			// Capture VMA information for the instruction pointer
+			if (event->instruction_ptr != 0) {
+				if (capture_vma_info(
+					    event->instruction_ptr,
+					    &event->vma_start, &event->vma_end,
+					    &event->vma_flags, event->vma_path,
+					    VMA_PATH_MAX) == 0) {
+					increment_stat(STAT_VMA_CAPTURED);
+				} else {
+					increment_stat(STAT_VMA_FAILURES);
+				}
+			} else {
+				increment_stat(STAT_VMA_FAILURES);
+			}
+		}
 	}
 
 	// Stack trace and VMA info are now captured and copied above
