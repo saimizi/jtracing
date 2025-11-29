@@ -84,6 +84,9 @@ pub struct SegfaultEvent {
     pub stack_trace: Option<Vec<u64>>,
     pub stack_trace_reliable: bool, // False if stack may be corrupted
 
+    // Stack smashing specific
+    pub vulnerable_function: Option<String>, // Function where stack smashing occurred (frame 1)
+
     // Memory mapping info
     pub vma_info: Option<VmaInfo>,
 }
@@ -91,14 +94,16 @@ pub struct SegfaultEvent {
 /// Event type classification
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum EventType {
-    Segfault, // SIGSEGV
-    Abort,    // SIGABRT (includes stack smashing)
+    Segfault,      // SIGSEGV
+    StackSmashing, // SIGABRT from stack protector
+    Abort,         // SIGABRT (generic)
 }
 
 impl EventType {
     fn as_str(&self) -> &'static str {
         match self {
             EventType::Segfault => "SEGFAULT",
+            EventType::StackSmashing => "STACK SMASHING DETECTED",
             EventType::Abort => "ABORT",
         }
     }
@@ -110,8 +115,9 @@ pub enum FaultType {
     MapError,    // SEGV_MAPERR - address not mapped
     AccessError, // SEGV_ACCERR - invalid permissions
 
-    // SIGABRT type
-    Abort, // Abort signal (may include stack smashing)
+    // SIGABRT types
+    StackProtector, // Stack smashing detected by stack protector
+    Abort,          // Generic abort signal
 
     Unknown(i32), // Other si_code values
 }
@@ -139,6 +145,7 @@ impl FaultType {
         match self {
             FaultType::MapError => "Address not mapped (SEGV_MAPERR)",
             FaultType::AccessError => "Access violation (SEGV_ACCERR)",
+            FaultType::StackProtector => "Stack protector triggered",
             FaultType::Abort => "Abort signal",
             FaultType::Unknown(_) => "Unknown fault type",
         }
@@ -1241,6 +1248,7 @@ impl JsonProcessor {
             signal_number: event.signal_number,
             event_type: match event.event_type {
                 EventType::Segfault => "segfault".to_string(),
+                EventType::StackSmashing => "stack_smashing".to_string(),
                 EventType::Abort => "abort".to_string(),
             },
             fault_address: format!("0x{:016x}", event.fault_address),
@@ -1249,6 +1257,7 @@ impl JsonProcessor {
             fault_type: match &event.fault_type {
                 FaultType::MapError => "map_error".to_string(),
                 FaultType::AccessError => "access_error".to_string(),
+                FaultType::StackProtector => "stack_protector".to_string(),
                 FaultType::Abort => "abort".to_string(),
                 FaultType::Unknown(code) => format!("unknown_{}", code),
             },
@@ -1593,6 +1602,7 @@ fn format_event_as_json(event: &SegfaultEvent) -> Result<String, JtraceError> {
         signal_number: event.signal_number,
         event_type: match event.event_type {
             EventType::Segfault => "segfault".to_string(),
+            EventType::StackSmashing => "stack_smashing".to_string(),
             EventType::Abort => "abort".to_string(),
         },
         fault_address: format!("0x{:016x}", event.fault_address),
@@ -1601,6 +1611,7 @@ fn format_event_as_json(event: &SegfaultEvent) -> Result<String, JtraceError> {
         fault_type: match &event.fault_type {
             FaultType::MapError => "map_error".to_string(),
             FaultType::AccessError => "access_error".to_string(),
+            FaultType::StackProtector => "stack_protector".to_string(),
             FaultType::Abort => "abort".to_string(),
             FaultType::Unknown(code) => format!("unknown_{}", code),
         },
@@ -1637,18 +1648,6 @@ fn format_event_as_json(event: &SegfaultEvent) -> Result<String, JtraceError> {
             message: format!("Failed to serialize event to JSON: {}", e),
         })
     })
-}
-
-/// Classify SIGABRT event - simplified to just treat all as abort
-/// Users can identify stack smashing from the stack trace if needed
-fn classify_abort_event(
-    _stack_trace: &Option<Vec<u64>>,
-    _instruction_pointer: u64,
-    _pid: u32,
-) -> (EventType, FaultType) {
-    // All SIGABRT events are classified as abort
-    // Stack trace will show __stack_chk_fail if it's stack smashing
-    (EventType::Abort, FaultType::Abort)
 }
 
 /// Parse BPF event data into Rust SegfaultEvent structure
@@ -1692,37 +1691,81 @@ fn parse_bpf_event(data: &[u8]) -> Result<SegfaultEvent, JtraceError> {
     // Stack trace reliability flag
     let stack_trace_reliable = bpf_event.stack_reliable != 0;
 
-    // Extract and validate stack trace if available
-    let stack_trace = if bpf_event.stack_size > 0 {
-        let stack_len = (bpf_event.stack_size as usize).min(bpf_event.stack_trace.len());
-        if stack_len > 0 {
-            // Filter out null addresses and validate stack addresses
-            let valid_frames: Vec<u64> = bpf_event.stack_trace[..stack_len]
-                .iter()
-                .copied()
-                .filter(|&addr| {
-                    // Filter out null addresses and obviously invalid addresses
-                    addr != 0 &&
-                    addr > 0x1000 && // Avoid null page and very low addresses
-                    addr < 0x7fffffffffff // Reasonable upper bound for user space
-                })
-                .collect();
+    // Extract stack trace from stack map using stack_id
+    let stack_trace = if bpf_event.stack_id >= 0 {
+        // Get stack trace from BPF stack map
+        unsafe {
+            if let Some(skel_ptr) = BPF_SKEL {
+                let skel = &*skel_ptr;
+                let maps = skel.maps();
+                let stack_traces_map = maps.stack_traces();
 
-            if !valid_frames.is_empty() {
-                jtrace!(
-                    "Parsed {} valid stack frames from {} total frames",
-                    valid_frames.len(),
-                    stack_len
-                );
-                Some(valid_frames)
+                // Look up stack trace using stack_id
+                let stack_id_bytes = (bpf_event.stack_id as u32).to_ne_bytes();
+                match stack_traces_map.lookup(&stack_id_bytes, MapFlags::ANY) {
+                    Ok(Some(stack_data)) => {
+                        // Stack map stores u64 addresses
+                        // MAX_STACK_DEPTH is 32, so max size is 32 * 8 = 256 bytes
+                        let num_frames = stack_data.len() / 8;
+                        let mut frames = Vec::new();
+
+                        for i in 0..num_frames {
+                            let offset = i * 8;
+                            if offset + 8 <= stack_data.len() {
+                                let addr = u64::from_ne_bytes([
+                                    stack_data[offset],
+                                    stack_data[offset + 1],
+                                    stack_data[offset + 2],
+                                    stack_data[offset + 3],
+                                    stack_data[offset + 4],
+                                    stack_data[offset + 5],
+                                    stack_data[offset + 6],
+                                    stack_data[offset + 7],
+                                ]);
+
+                                // Stop at first null address (end of stack trace)
+                                if addr == 0 {
+                                    break;
+                                }
+
+                                // Validate address is reasonable for userspace
+                                if addr > 0x1000 && addr < 0x7fffffffffff {
+                                    frames.push(addr);
+                                }
+                            }
+                        }
+
+                        if !frames.is_empty() {
+                            jtrace!(
+                                "Retrieved {} stack frames from stack map (stack_id={})",
+                                frames.len(),
+                                bpf_event.stack_id
+                            );
+                            Some(frames)
+                        } else {
+                            jtrace!(
+                                "No valid frames in stack map entry (stack_id={})",
+                                bpf_event.stack_id
+                            );
+                            None
+                        }
+                    }
+                    Ok(None) => {
+                        jtrace!("Stack ID {} not found in stack map", bpf_event.stack_id);
+                        None
+                    }
+                    Err(e) => {
+                        jtrace!("Failed to lookup stack trace from map: {}", e);
+                        None
+                    }
+                }
             } else {
-                jtrace!("No valid stack frames found in {} total frames", stack_len);
+                jtrace!("BPF skeleton not available for stack trace lookup");
                 None
             }
-        } else {
-            None
         }
     } else {
+        jtrace!("No stack trace available (stack_id={})", bpf_event.stack_id);
         None
     };
 
@@ -1838,6 +1881,7 @@ fn parse_bpf_event(data: &[u8]) -> Result<SegfaultEvent, JtraceError> {
         registers,
         stack_trace,
         stack_trace_reliable,
+        vulnerable_function: None, // Will be set by classification logic if needed
         vma_info,
     };
 
@@ -1879,6 +1923,9 @@ static mut EVENT_PROCESSOR: Option<Box<dyn EventProcessor>> = None;
 
 /// Global process name filter
 static mut PROCESS_NAME_FILTER: Option<String> = None;
+
+/// Global reference to BPF skeleton for stack trace lookup
+static mut BPF_SKEL: Option<*const SegfaultAnalyzerSkel> = None;
 
 /// Global event statistics
 static EVENT_STATS: Mutex<EventStats> = Mutex::new(EventStats {
@@ -2218,6 +2265,8 @@ fn main() -> Result<(), JtraceError> {
 
     unsafe {
         EVENT_PROCESSOR = Some(processor);
+        // Store skeleton reference for stack trace lookup
+        BPF_SKEL = Some(&skel as *const _);
     }
 
     // Main event loop

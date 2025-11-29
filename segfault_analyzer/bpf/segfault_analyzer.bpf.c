@@ -19,9 +19,9 @@
 #define TASK_COMM_LEN 16
 #endif
 
-#ifndef PERF_MAX_STACK_DEPTH
-#define PERF_MAX_STACK_DEPTH 128
-#endif
+// Maximum stack depth for stack trace capture
+// Using a smaller value for better compatibility across architectures
+#define MAX_STACK_DEPTH 32
 
 // Signal numbers
 #define SIGABRT 6 // Abort signal
@@ -65,9 +65,8 @@ struct segfault_event {
 	u64 registers[16]; // Key CPU registers
 	u32 register_count; // Number of valid registers
 
-	// Stack trace
-	u64 stack_trace[PERF_MAX_STACK_DEPTH];
-	s32 stack_size; // Number of stack frames captured
+	// Stack trace (using stack map for better ARM64 compatibility)
+	s32 stack_id; // Stack ID from stack_traces map (-1 if not available)
 	u8 stack_reliable; // 0=unreliable (corrupted), 1=reliable
 
 	// Memory mapping context for instruction pointer
@@ -92,6 +91,14 @@ struct {
 	__uint(max_entries, 256 * 1024); // 256KB ring buffer
 } events SEC(".maps");
 
+// Stack trace map for reliable stack capture across architectures
+struct {
+	__uint(type, BPF_MAP_TYPE_STACK_TRACE);
+	__uint(max_entries, 1000);
+	__uint(key_size, sizeof(u32));
+	__uint(value_size, MAX_STACK_DEPTH * sizeof(u64));
+} stack_traces SEC(".maps");
+
 // Statistics tracking
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -109,9 +116,8 @@ struct segfault_fault_info {
 	// Register state (architecture-specific)
 	u64 registers[16];
 	u32 register_count;
-	// Stack trace
-	u64 stack_trace[PERF_MAX_STACK_DEPTH];
-	s32 stack_size;
+	// Stack trace (using stack map)
+	s32 stack_id;
 	// VMA information for instruction pointer
 	u64 vma_start;
 	u64 vma_end;
@@ -271,29 +277,24 @@ static u32 capture_registers(struct pt_regs *ctx, u64 *registers)
 	return count;
 }
 
-// Helper function to capture user stack trace
-static s32 capture_stack_trace(void *ctx, u64 *stack_trace, u32 max_depth)
+// Helper function to capture user stack trace using stack map
+// Returns stack_id (>= 0) on success, -1 on failure
+static s32 capture_stack_id(void *ctx)
 {
-	if (!ctx || !stack_trace || max_depth == 0) {
-		return 0;
+	if (!ctx) {
+		return -1;
 	}
 
-	// Limit max_depth to prevent excessive overhead
-	if (max_depth > PERF_MAX_STACK_DEPTH) {
-		max_depth = PERF_MAX_STACK_DEPTH;
-	}
+	// Capture user-space stack trace and store in stack map
+	// This is more reliable across different architectures (especially ARM64)
+	s32 stack_id = bpf_get_stackid(ctx, &stack_traces, BPF_F_USER_STACK);
 
-	// Capture user-space stack trace
-	s32 stack_size = bpf_get_stack(
-		ctx, stack_trace, max_depth * sizeof(u64), BPF_F_USER_STACK);
-
-	if (stack_size < 0) {
+	if (stack_id < 0) {
 		// Stack capture failed
-		return 0;
+		return -1;
 	}
 
-	// Convert byte size to number of stack frames
-	return stack_size / sizeof(u64);
+	return stack_id;
 }
 
 #if HAS_BPF_FIND_VMA
@@ -609,7 +610,7 @@ int kprobe_force_sig_fault(struct pt_regs *ctx)
 	info->pid = pid;
 	info->timestamp_ns = bpf_ktime_get_ns();
 	info->register_count = 0;
-	info->stack_size = 0;
+	info->stack_id = -1;
 	info->vma_start = 0;
 	info->vma_end = 0;
 	info->vma_flags = 0;
@@ -625,16 +626,13 @@ int kprobe_force_sig_fault(struct pt_regs *ctx)
 		increment_stat(STAT_REGISTER_FAILURES);
 	}
 
-	// Capture stack trace first
-	info->stack_size =
-		capture_stack_trace(ctx, info->stack_trace, max_stack_depth);
-	if (info->stack_size == 0) {
-		increment_stat(STAT_STACK_FAILURES);
-	}
+	// Get instruction pointer from pt_regs
+	info->instruction_ptr = PT_REGS_IP(ctx);
 
-	// Use the first stack frame as the instruction pointer (most accurate for userspace)
-	if (info->stack_size > 0) {
-		info->instruction_ptr = info->stack_trace[0];
+	// Capture stack trace using stack map (more reliable on ARM64)
+	info->stack_id = capture_stack_id(ctx);
+	if (info->stack_id < 0) {
+		increment_stat(STAT_STACK_FAILURES);
 	}
 
 	// Capture VMA information for the instruction pointer
@@ -694,7 +692,7 @@ int trace_signal_deliver(struct trace_event_raw_signal_deliver *ctx)
 	event->instruction_ptr = 0;
 	event->fault_code = 0;
 	event->register_count = 0;
-	event->stack_size = 0;
+	event->stack_id = -1; // -1 means no stack trace
 	event->stack_reliable = 1; // Assume reliable by default
 	event->vma_start = 0;
 	event->vma_end = 0;
@@ -750,14 +748,8 @@ int trace_signal_deliver(struct trace_event_raw_signal_deliver *ctx)
 				event->registers[i] = fault_info->registers[i];
 			}
 
-			// Copy stack trace
-			event->stack_size = fault_info->stack_size;
-			for (int i = 0; i < PERF_MAX_STACK_DEPTH &&
-					i < fault_info->stack_size;
-			     i++) {
-				event->stack_trace[i] =
-					fault_info->stack_trace[i];
-			}
+			// Copy stack ID
+			event->stack_id = fault_info->stack_id;
 
 			// Copy VMA information
 			event->vma_start = fault_info->vma_start;
@@ -779,32 +771,13 @@ int trace_signal_deliver(struct trace_event_raw_signal_deliver *ctx)
 
 		// For SIGABRT, capture stack trace directly here since force_sig_fault won't be called
 		if (ctx->sig == SIGABRT) {
-			// Capture stack trace directly
-			event->stack_size = capture_stack_trace(
-				ctx, event->stack_trace, max_stack_depth);
-			if (event->stack_size == 0) {
+			// Capture stack trace using stack map (more reliable on ARM64)
+			// Note: We cannot lookup from stack_traces map in BPF - it will be done in userspace
+			event->stack_id = capture_stack_id(ctx);
+			if (event->stack_id < 0) {
 				increment_stat(STAT_STACK_FAILURES);
 			}
-
-			// Use the first stack frame as the instruction pointer
-			if (event->stack_size > 0) {
-				event->instruction_ptr = event->stack_trace[0];
-			}
-
-			// Capture VMA information for the instruction pointer
-			if (event->instruction_ptr != 0) {
-				if (capture_vma_info(
-					    event->instruction_ptr,
-					    &event->vma_start, &event->vma_end,
-					    &event->vma_flags, event->vma_path,
-					    VMA_PATH_MAX) == 0) {
-					increment_stat(STAT_VMA_CAPTURED);
-				} else {
-					increment_stat(STAT_VMA_FAILURES);
-				}
-			} else {
-				increment_stat(STAT_VMA_FAILURES);
-			}
+			// instruction_ptr will be extracted from stack trace in userspace
 		}
 	}
 

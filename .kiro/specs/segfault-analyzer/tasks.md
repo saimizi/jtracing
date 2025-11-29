@@ -76,7 +76,7 @@
   - Handle symbol resolution failures gracefully
   - _Requirements: 3.1, 3.2_
 
-- [-] 3.3b Implement stack smashing event classification in userspace
+- [ ] 3.3b Implement stack smashing event classification in userspace
   - Add logic to identify stack protector functions (__stack_chk_fail, __fortify_fail)
   - Classify SIGABRT events as stack_smashing or generic_abort based on symbols
   - Extract vulnerable function from stack trace frame 1 (not frame 0)
