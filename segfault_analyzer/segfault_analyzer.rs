@@ -1764,8 +1764,40 @@ fn parse_bpf_event(data: &[u8]) -> Result<SegfaultEvent, JtraceError> {
                 None
             }
         }
+    } else if bpf_event.stack_size > 0 {
+        // Fallback: use direct stack trace buffer from BPF event
+        let stack_len = (bpf_event.stack_size as usize).min(bpf_event.stack_trace.len());
+        let mut frames = Vec::new();
+
+        for i in 0..stack_len {
+            let addr = bpf_event.stack_trace[i];
+            // Stop at first null address
+            if addr == 0 {
+                break;
+            }
+            // Validate address is reasonable for userspace
+            if addr > 0x1000 && addr < 0x7fffffffffff {
+                frames.push(addr);
+            }
+        }
+
+        if !frames.is_empty() {
+            jtrace!(
+                "Retrieved {} stack frames from direct buffer (stack_size={})",
+                frames.len(),
+                bpf_event.stack_size
+            );
+            Some(frames)
+        } else {
+            jtrace!("No valid frames in direct stack buffer");
+            None
+        }
     } else {
-        jtrace!("No stack trace available (stack_id={})", bpf_event.stack_id);
+        jtrace!(
+            "No stack trace available (stack_id={}, stack_size={})",
+            bpf_event.stack_id,
+            bpf_event.stack_size
+        );
         None
     };
 

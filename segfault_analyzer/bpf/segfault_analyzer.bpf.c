@@ -65,8 +65,10 @@ struct segfault_event {
 	u64 registers[16]; // Key CPU registers
 	u32 register_count; // Number of valid registers
 
-	// Stack trace (using stack map for better ARM64 compatibility)
+	// Stack trace
 	s32 stack_id; // Stack ID from stack_traces map (-1 if not available)
+	u64 stack_trace[MAX_STACK_DEPTH]; // Direct stack trace buffer (fallback)
+	u32 stack_size; // Number of valid stack frames in stack_trace
 	u8 stack_reliable; // 0=unreliable (corrupted), 1=reliable
 
 	// Memory mapping context for instruction pointer
@@ -286,15 +288,49 @@ static s32 capture_stack_id(void *ctx)
 	}
 
 	// Capture user-space stack trace and store in stack map
-	// This is more reliable across different architectures (especially ARM64)
+	// Use BPF_F_USER_STACK to get userspace stack
+	// On some ARM64 kernels, this may fail from tracepoint context
 	s32 stack_id = bpf_get_stackid(ctx, &stack_traces, BPF_F_USER_STACK);
 
 	if (stack_id < 0) {
-		// Stack capture failed
+		// Stack capture failed - this is common on ARM64 from tracepoints
+		// The stack trace will not be available
 		return -1;
 	}
 
 	return stack_id;
+}
+
+// Helper function to capture user stack trace directly into buffer
+// Returns number of frames captured (>= 0), or negative on error
+static int capture_stack_direct(void *ctx, u64 *stack_buf, u32 max_depth)
+{
+	if (!ctx || !stack_buf || max_depth == 0) {
+		return 0;
+	}
+
+	// Try to capture user stack trace directly
+	// bpf_get_stack returns the number of bytes written, or negative on error
+	int ret = bpf_get_stack(ctx, stack_buf, max_depth * sizeof(u64),
+				BPF_F_USER_STACK);
+
+	if (ret < 0) {
+		return 0;
+	}
+
+	// Convert bytes to number of frames
+	return ret / sizeof(u64);
+}
+
+// Helper function to get current task's user instruction pointer
+// This is a best-effort attempt - may not work on all architectures/kernels
+static u64 get_current_user_ip(void)
+{
+	// On ARM64, getting user IP from tracepoint context is very difficult
+	// The user regs are not directly accessible from the tracepoint
+	// Return 0 to indicate we couldn't get the IP
+	// The userspace code will handle this gracefully
+	return 0;
 }
 
 #if HAS_BPF_FIND_VMA
@@ -692,7 +728,8 @@ int trace_signal_deliver(struct trace_event_raw_signal_deliver *ctx)
 	event->instruction_ptr = 0;
 	event->fault_code = 0;
 	event->register_count = 0;
-	event->stack_id = -1; // -1 means no stack trace
+	event->stack_id = -1; // -1 means no stack trace from stack map
+	event->stack_size = 0; // No direct stack trace yet
 	event->stack_reliable = 1; // Assume reliable by default
 	event->vma_start = 0;
 	event->vma_end = 0;
@@ -706,6 +743,11 @@ int trace_signal_deliver(struct trace_event_raw_signal_deliver *ctx)
 	// Initialize vma_path
 	for (int i = 0; i < VMA_PATH_MAX; i++) {
 		event->vma_path[i] = 0;
+	}
+
+	// Initialize stack_trace array
+	for (int i = 0; i < MAX_STACK_DEPTH; i++) {
+		event->stack_trace[i] = 0;
 	}
 
 	// Fill basic process information
@@ -771,13 +813,31 @@ int trace_signal_deliver(struct trace_event_raw_signal_deliver *ctx)
 
 		// For SIGABRT, capture stack trace directly here since force_sig_fault won't be called
 		if (ctx->sig == SIGABRT) {
-			// Capture stack trace using stack map (more reliable on ARM64)
-			// Note: We cannot lookup from stack_traces map in BPF - it will be done in userspace
+			// Try to capture stack trace using stack map first
 			event->stack_id = capture_stack_id(ctx);
 			if (event->stack_id < 0) {
-				increment_stat(STAT_STACK_FAILURES);
+				// Stack map capture failed, try direct capture as fallback
+				int frames =
+					capture_stack_direct(ctx,
+							     event->stack_trace,
+							     MAX_STACK_DEPTH);
+				if (frames > 0) {
+					event->stack_size = frames;
+					// Get instruction pointer from first frame
+					if (event->stack_trace[0] != 0) {
+						event->instruction_ptr =
+							event->stack_trace[0];
+					}
+				} else {
+					increment_stat(STAT_STACK_FAILURES);
+				}
 			}
-			// instruction_ptr will be extracted from stack trace in userspace
+
+			// Try to get instruction pointer from current task's user regs
+			// This is a fallback for when stack trace capture fails
+			if (event->instruction_ptr == 0) {
+				event->instruction_ptr = get_current_user_ip();
+			}
 		}
 	}
 
