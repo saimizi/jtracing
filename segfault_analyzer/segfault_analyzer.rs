@@ -1899,6 +1899,19 @@ fn parse_bpf_event(data: &[u8]) -> Result<SegfaultEvent, JtraceError> {
         )
     };
 
+    // Use first stack frame as instruction pointer if not available
+    let instruction_pointer = if bpf_event.instruction_ptr != 0 {
+        bpf_event.instruction_ptr
+    } else if let Some(ref frames) = stack_trace {
+        if !frames.is_empty() {
+            frames[0]
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
     // Create and validate the final event
     let event = SegfaultEvent {
         pid: bpf_event.pid,
@@ -1908,7 +1921,7 @@ fn parse_bpf_event(data: &[u8]) -> Result<SegfaultEvent, JtraceError> {
         signal_number,
         event_type,
         fault_address: bpf_event.fault_addr,
-        instruction_pointer: bpf_event.instruction_ptr,
+        instruction_pointer,
         fault_type,
         registers,
         stack_trace,

@@ -326,11 +326,31 @@ static int capture_stack_direct(void *ctx, u64 *stack_buf, u32 max_depth)
 // This is a best-effort attempt - may not work on all architectures/kernels
 static u64 get_current_user_ip(void)
 {
-	// On ARM64, getting user IP from tracepoint context is very difficult
-	// The user regs are not directly accessible from the tracepoint
+	struct task_struct *task;
+	u64 ip = 0;
+
+	task = bpf_get_current_task_btf();
+	if (!task) {
+		return 0;
+	}
+
+	// Try to read the saved PC from the task's thread context
+	// This is architecture-specific
+#ifdef __TARGET_ARCH_arm64
+	// On ARM64, the user PC might be saved in task->thread.cpu_context.pc
+	// But this is the kernel context, not user context
+	// The user regs are at the top of the kernel stack
+	// We can try to access them via task_pt_regs() equivalent
+
+	// Unfortunately, accessing user regs from BPF is very limited
 	// Return 0 to indicate we couldn't get the IP
-	// The userspace code will handle this gracefully
-	return 0;
+#endif
+
+#ifdef __TARGET_ARCH_x86
+	// On x86_64, similar limitations apply
+#endif
+
+	return ip;
 }
 
 #if HAS_BPF_FIND_VMA
