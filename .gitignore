@@ -6,3 +6,6 @@
 *.patch
 *.log
 .requirements/*
+testfiles/segfault_examples
+testfiles/test_stack_smashing
+
