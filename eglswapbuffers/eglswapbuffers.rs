@@ -253,7 +253,7 @@ fn main() -> Result<(), EGLSwapBuffersError> {
         probe = "SDL_GL_SwapWindow";
         file = format!("{}/libSDL2-2.0.so.0", dir);
     } else {
-        probe = "eglswapbuffers";
+        probe = "eglSwapBuffers";
         file = format!("{}/libEGL.so.1", dir);
     }
 
