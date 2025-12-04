@@ -1639,18 +1639,6 @@ fn format_event_as_json(event: &SegfaultEvent) -> Result<String, JtraceError> {
     })
 }
 
-/// Classify SIGABRT event - simplified to just treat all as abort
-/// Users can identify stack smashing from the stack trace if needed
-fn classify_abort_event(
-    _stack_trace: &Option<Vec<u64>>,
-    _instruction_pointer: u64,
-    _pid: u32,
-) -> (EventType, FaultType) {
-    // All SIGABRT events are classified as abort
-    // Stack trace will show __stack_chk_fail if it's stack smashing
-    (EventType::Abort, FaultType::Abort)
-}
-
 /// Parse BPF event data into Rust SegfaultEvent structure
 fn parse_bpf_event(data: &[u8]) -> Result<SegfaultEvent, JtraceError> {
     // Validate input data size
