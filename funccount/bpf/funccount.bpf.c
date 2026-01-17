@@ -96,6 +96,10 @@ static __always_inline int trace_func(void *ctx)
 		else
 			bpf_map_update_elem(&stack_cnt, &key, &one,
 					    BPF_NOEXIST);
+
+		/* Send PID only for ExecMap loading */
+		bpf_perf_event_output(ctx, &exectrace_pb, BPF_F_CURRENT_CPU,
+				      &pid, sizeof(pid));
 	} else { /* exec trace */
 		struct exectrace_event ekey = {};
 		int one = 1;
@@ -117,10 +121,11 @@ static __always_inline int trace_func(void *ctx)
 
 		__builtin_memcpy(&ekey.ts, &ts, sizeof(ts));
 		bpf_map_update_elem(&exec_time, &ekey, &one, BPF_NOEXIST);
-	}
 
-	bpf_perf_event_output(ctx, &exectrace_pb, BPF_F_CURRENT_CPU, &pid,
-			      sizeof(pid));
+		/* Send full event for real-time processing */
+		bpf_perf_event_output(ctx, &exectrace_pb, BPF_F_CURRENT_CPU,
+				      &ekey, sizeof(ekey));
+	}
 
 	return 0;
 }
