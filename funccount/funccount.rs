@@ -560,22 +560,112 @@ fn main() -> Result<(), FuncCountError> {
 
     let mut links = vec![];
     let mut exec_map_hash = HashMap::<u32, ExecMap>::new();
+
+    // Shared state for real-time exec trace
+    let event_counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let should_stop = Arc::new(AtomicBool::new(false));
+    let ts_previous = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
     let runtime_s;
     {
+        // Create SymbolAnalyzer early for real-time symbol resolution
+        let mut symanalyzer =
+            SymbolAnalyzer::new(None).change_context(FuncCountError::SymbolAnalyzerError)?;
+
         let exec_map_hash_ref = &mut exec_map_hash;
+        let symanalyzer_ref = &mut symanalyzer;
+        let event_counter_ref = event_counter.clone();
+        let should_stop_ref = should_stop.clone();
+        let ts_previous_ref = ts_previous.clone();
+        let cli_count = cli.count;
+        let cli_relative = cli.relative;
+        let cli_exec = cli.exec;
 
         let handle_exec_trace = move |_cpu: i32, data: &[u8]| {
-            let pid = NativeEndian::read_u32(data);
+            jdebug!(
+                "Received event, size: {}, exec mode: {}",
+                data.len(),
+                cli_exec
+            );
 
-            match ExecMap::new(pid) {
-                Ok(em) => {
-                    exec_map_hash_ref.insert(pid, em);
-                }
-                Err(e) => {
-                    if pid != 0 {
-                        jwarn!("Failed to read maps for pid {}: {}", pid, e)
+            if data.len() == 4 {
+                // Stack mode: Load process maps for PID
+                let pid = NativeEndian::read_u32(data);
+                match ExecMap::new(pid) {
+                    Ok(em) => {
+                        exec_map_hash_ref.insert(pid, em);
+                    }
+                    Err(e) => {
+                        if pid != 0 {
+                            jwarn!("Failed to read maps for pid {}: {}", pid, e)
+                        }
                     }
                 }
+            } else if data.len() >= 40 && cli_exec {
+                // Exec mode: Real-time event processing
+
+                // Parse event
+                let mut event = ExecTraceEvent::default();
+                plain::copy_from_bytes(&mut event, data).expect("Corrupted event data");
+
+                // Check count limit
+                if let Some(limit) = cli_count {
+                    let current = event_counter_ref.fetch_add(1, Ordering::SeqCst);
+                    if current >= limit {
+                        should_stop_ref.store(true, Ordering::Release);
+                        return;
+                    }
+                }
+
+                // Extract event data
+                let pid = event.pid;
+                let ts: u64 = NativeEndian::read_u64(&event.ts);
+                let probe_addr = NativeEndian::read_u64(&event.frame0);
+                let comm = unsafe { bytes_to_string(event.comm.as_ptr()) };
+
+                // Resolve symbol
+                let probe = if event.frame0_type == 0 {
+                    // Kernel symbol
+                    symanalyzer_ref
+                        .ksymbol(probe_addr)
+                        .unwrap_or_else(|_| "[unknown]".to_string())
+                } else {
+                    // User symbol - lazy load ExecMap if needed
+                    if !exec_map_hash_ref.contains_key(&pid) {
+                        if let Ok(em) = ExecMap::new(pid) {
+                            exec_map_hash_ref.insert(pid, em);
+                        }
+                    }
+
+                    symanalyzer_ref
+                        .usymbol(pid, probe_addr)
+                        .map(|(_, s, _)| s)
+                        .unwrap_or_else(|_| "[unknown]".to_string())
+                };
+
+                // Format timestamp
+                let ts_display = ts / 1000; // Convert to microseconds
+                let ts_show = if cli_relative {
+                    let prev = ts_previous_ref.swap(ts_display, Ordering::AcqRel);
+                    if prev == 0 {
+                        0
+                    } else {
+                        ts_display - prev
+                    }
+                } else {
+                    ts_display
+                };
+
+                // Print immediately
+                println!(
+                    "{:<12.6} {:<5} {:<20} {}",
+                    ts_show as f64 / 1000000_f64,
+                    pid,
+                    comm,
+                    probe
+                );
+            } else {
+                jwarn!("Invalid event size: {} or unexpected mode", data.len());
             }
         };
 
@@ -814,6 +904,11 @@ fn main() -> Result<(), FuncCountError> {
         })
         .map_err(|_| Report::new(FuncCountError::Unexpected))?;
 
+        // Print header for exec mode
+        if cli.exec {
+            println!("{:<12} {:<5} {:<20} {}", "TIMESTAMP", "PID", "COMM", "FUNC");
+        }
+
         if cli.duration > 0 {
             println!(
                 "Tracing {} symbols for {} seconds, Type Ctrl-C to stop.",
@@ -830,7 +925,7 @@ fn main() -> Result<(), FuncCountError> {
             100
         };
 
-        while running.load(Ordering::Acquire) {
+        while running.load(Ordering::Acquire) && !should_stop.load(Ordering::Acquire) {
             let _ = perfbuf.poll(std::time::Duration::from_millis(timeout));
 
             if cli.duration > 0 {
@@ -856,18 +951,24 @@ fn main() -> Result<(), FuncCountError> {
         runtime_s = start.elapsed().as_secs();
     }
 
-    println!("Tracing finished, Processing data...");
-    let mut symanalyzer =
-        SymbolAnalyzer::new(None).change_context(FuncCountError::SymbolAnalyzerError)?;
+    if !cli.exec {
+        // Stack mode: Post-process and print results
+        println!("Tracing finished, Processing data...");
+        let mut symanalyzer =
+            SymbolAnalyzer::new(None).change_context(FuncCountError::SymbolAnalyzerError)?;
 
-    process_events(
-        &cli,
-        &mut skel.maps(),
-        &mut result,
-        &mut symanalyzer,
-        &mut exec_map_hash,
-    )?;
+        process_events(
+            &cli,
+            &mut skel.maps(),
+            &mut result,
+            &mut symanalyzer,
+            &mut exec_map_hash,
+        )?;
 
-    print_result(&cli, &mut result, runtime_s)?;
+        print_result(&cli, &mut result, runtime_s)?;
+    } else {
+        // Exec mode: Already printed everything in real-time
+        println!();
+    }
     Ok(())
 }
